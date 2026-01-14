@@ -35,9 +35,9 @@ AI-powered e-commerce detail page generator built with Tauri v2 + React + TypeSc
 
 <img width="1448" height="920" alt="screenshot-20260113-162754" src="https://github.com/user-attachments/assets/533e72e3-571e-4127-8096-7247d824a285" />
 <img width="1419" height="1805" alt="screenshot-20260113-162832" src="https://github.com/user-attachments/assets/bbd02fda-d975-45a9-b46e-545f29f04eed" />
-<img width="594" height="953" alt="screenshot-20260113-163226" src="https://github.com/user-attachments/assets/1fde85eb-d7de-4744-b7a4-1381c8b49a96" style="display: inline-block; margin-right: 10px;" />
-<img width="588" height="948" alt="screenshot-20260113-163214" src="https://github.com/user-attachments/assets/92157fcf-9279-4468-b5ef-d2ea367beee7" style="display: inline-block; margin-right: 10px;" />
-<img width="582" height="983" alt="screenshot-20260113-163330" src="https://github.com/user-attachments/assets/6094d3be-53ab-44ee-ba5d-a66df6df384c" style="display: inline-block;" />
+<img width="30%" height="953" alt="screenshot-20260113-163226" src="https://github.com/user-attachments/assets/1fde85eb-d7de-4744-b7a4-1381c8b49a96" style="display: inline-block; margin-right: 10px;" />
+<img width="30%" height="948" alt="screenshot-20260113-163214" src="https://github.com/user-attachments/assets/92157fcf-9279-4468-b5ef-d2ea367beee7" style="display: inline-block; margin-right: 10px;" />
+<img width="30%" height="983" alt="screenshot-20260113-163330" src="https://github.com/user-attachments/assets/6094d3be-53ab-44ee-ba5d-a66df6df384c" style="display: inline-block;" />
 
 #### 优秀案例
 ##### NanoBanana
