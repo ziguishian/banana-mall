@@ -48,12 +48,8 @@ AI-powered e-commerce detail page generator built with Tauri v2 + React + TypeSc
 <img width="33%" height="1024" alt="detail-0-regenerated-2026-01-13T09-32-26-571Z" src="https://github.com/user-attachments/assets/357c86e6-2c7a-48b8-9202-59c9acb8a5f9" style="display: inline-block;" />
 
 #### NanoBanana PRO
-![2026-01-13T08-34-43-105Z_1_main_main-0](https://github.com/user-attachments/assets/647e4eab-d5d1-4259-9c91-9344c933e4d1)
-![2026-01-13T08-34-43-105Z_3_main_main-2](https://github.com/user-attachments/assets/d4db018b-e388-483f-89c3-ec8c021dfbb8)
-![2026-01-13T08-34-43-105Z_5_detail_detail-1](https://github.com/user-attachments/assets/b865881c-500f-4774-b1c4-4c318925cd8b)
-![2026-01-13T08-34-43-105Z_4_detail_detail-0](https://github.com/user-attachments/assets/af80aa48-1758-4873-a61d-070fc394c9b4)
-![2026-01-13T08-34-43-105Z_6_detail_detail-2](https://github.com/user-attachments/assets/b81939e8-97d7-4c0a-bbd0-c26155b13c7f)
-![2026-01-13T08-34-43-105Z_2_main_main-1](https://github.com/user-attachments/assets/f2b45683-02cf-447c-8abc-6fa91239faca)
+![2026-01-13T08-34-43-105Z_1_main_main-0](https://github.com/user-attachments/assets/647e4eab-d5d1-4259-9c91-9344c933e4d1)![2026-01-13T08-34-43-105Z_3_main_main-2](https://github.com/user-attachments/assets/d4db018b-e388-483f-89c3-ec8c021dfbb8)![2026-01-13T08-34-43-105Z_5_detail_detail-1](https://github.com/user-attachments/assets/b865881c-500f-4774-b1c4-4c318925cd8b)
+![2026-01-13T08-34-43-105Z_4_detail_detail-0](https://github.com/user-attachments/assets/af80aa48-1758-4873-a61d-070fc394c9b4)![2026-01-13T08-34-43-105Z_6_detail_detail-2](https://github.com/user-attachments/assets/b81939e8-97d7-4c0a-bbd0-c26155b13c7f)![2026-01-13T08-34-43-105Z_2_main_main-1](https://github.com/user-attachments/assets/f2b45683-02cf-447c-8abc-6fa91239faca)
 
 
 
