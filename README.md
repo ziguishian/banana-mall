@@ -34,8 +34,9 @@ AI-powered e-commerce detail page generator built with Tauri v2 + React + TypeSc
 ### 使用案例
 
 <img width="48%" height="920" alt="screenshot-20260113-162754" src="https://github.com/user-attachments/assets/c38e08ee-6722-447e-b640-ed6f72cdbb12"  style="display: inline-block; margin-right: 10px;" />
-<img width="48%" height="1805" alt="screenshot-20260113-162832" src="https://github.com/user-attachments/assets/bbd02fda-d975-45a9-b46e-545f29f04eed" style="display: inline-block;"/>
-<img width="2823" height="1844" alt="screenshot-20260113-163433" src="https://github.com/user-attachments/assets/533e72e3-571e-4127-8096-7247d824a285" />
+<img width="48%" height="1805" alt="screenshot-20260113-162832" src="https://github.com/user-attachments/assets/533e72e3-571e-4127-8096-7247d824a285" style="display: inline-block;"/>
+<img width="2823" height="1844" alt="screenshot-20260113-163433" src="https://github.com/user-attachments/assets/bbd02fda-d975-45a9-b46e-545f29f04eed" />
+
 
 
 <img width="32%" height="953" alt="screenshot-20260113-163226" src="https://github.com/user-attachments/assets/1fde85eb-d7de-4744-b7a4-1381c8b49a96" style="display: inline-block; margin-right: 10px;" />
