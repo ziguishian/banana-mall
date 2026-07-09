@@ -14,12 +14,14 @@ import {
   Save,
   Sparkles,
   Trash2,
+  ZoomIn,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { NoticeCard } from "@/components/shared/notice-card";
 import { ProjectOutputConfigCard } from "@/components/shared/project-output-config-card";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { useImagePreview, type ImagePreviewPayload } from "@/components/shared/image-preview-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -145,8 +147,79 @@ function getGenerationLabel(section: any) {
   return "尚未生成";
 }
 
+function getPlannerPreviewAspectClass(aspectRatio: "1:1" | "3:4" | "9:16") {
+  if (aspectRatio === "1:1") return "aspect-square";
+  if (aspectRatio === "3:4") return "aspect-[3/4]";
+  return "aspect-[9/16]";
+}
+
+function hasCompletedPreview(section: any) {
+  return section.status === "SUCCESS";
+}
+
+function getPlannerCardContentClass(section: any) {
+  const completedLayout = hasCompletedPreview(section)
+    ? "lg:grid lg:grid-cols-[200px_minmax(0,1fr)] lg:items-start lg:gap-4 lg:space-y-0 xl:grid-cols-[236px_minmax(0,1fr)]"
+    : "";
+
+  return `space-y-3 p-4 pt-0 ${completedLayout}`;
+}
+
+function CompletedSectionPreview({
+  section,
+  aspectRatio,
+  onPreview,
+}: {
+  section: any;
+  aspectRatio: "1:1" | "3:4" | "9:16";
+  onPreview: (image: ImagePreviewPayload) => void;
+}) {
+  if (section.status !== "SUCCESS") {
+    return null;
+  }
+
+  if (!section.imageUrl) {
+    return (
+      <NoticeCard
+        variant="warning"
+        title="已完成但暂未找到图片"
+        description="当前模块状态为已完成，但项目详情里没有返回图片地址。可以点击重生成，或进入编辑台查看版本记录。"
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-slate-100 shadow-sm dark:bg-white/[0.04] lg:sticky lg:top-3">
+      <button
+        type="button"
+        className={`group relative mx-auto block max-h-[300px] w-full cursor-zoom-in overflow-hidden text-left ${getPlannerPreviewAspectClass(aspectRatio)}`}
+        onClick={() =>
+          onPreview({
+            url: section.imageUrl,
+            title: section.title,
+            meta: `${aspectRatio} ${section.type === "HERO" ? "头图" : "详情页"}`,
+          })
+        }
+        aria-label={`放大查看 ${section.title}`}
+      >
+        <img src={section.imageUrl} alt={section.title} className="h-full w-full object-contain" />
+        <div className="pointer-events-none absolute left-2 top-2 flex flex-wrap gap-1.5">
+          <StatusBadge value={section.status} />
+          <Badge variant={getGenerationLabel(section) === "AI 真图" ? "success" : "outline"}>
+            {getGenerationLabel(section)}
+          </Badge>
+        </div>
+        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          <ZoomIn className="h-4 w-4" />
+        </div>
+      </button>
+    </div>
+  );
+}
+
 export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
   const router = useRouter();
+  const { openImagePreview } = useImagePreview();
   const [projectState, setProjectState] = useState(project);
   const [sections, setSections] = useState(project.sections ?? []);
   const [planning, setPlanning] = useState(false);
@@ -804,15 +877,15 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             {heroSections.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border p-5 text-sm text-muted-foreground">
                 还没有头图规划项。点击上方“AI 自动规划”后，会按分析页配置直接生成对应数量的头图规划卡片。
               </div>
             ) : (
               heroSections.map((section: any, index: number) => (
-                <Card key={section.id} className="border-border/80 shadow-sm">
-                  <CardHeader>
+                <Card key={section.id} className="rounded-2xl border-border/80 shadow-sm">
+                  <CardHeader className="p-4 pb-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <CardTitle className="text-base">头图 {index + 1}</CardTitle>
@@ -824,42 +897,46 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>模块类型</Label>
-                        <select
-                          className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
-                          value={String(section.type).toLowerCase()}
-                          onChange={(event) =>
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, type: event.target.value.toUpperCase() } : item)),
-                            )
-                          }
-                        >
-                          {plannerSectionTypeOptions.map((type) => (
-                            <option key={type} value={type}>
-                              {sectionTypeLabels[type]}
-                            </option>
-                          ))}
-                        </select>
+                  <CardContent className={getPlannerCardContentClass(section)}>
+                    <CompletedSectionPreview section={section} aspectRatio="1:1" onPreview={openImagePreview} />
+                    <div className="space-y-3">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>模块类型</Label>
+                          <select
+                            className="flex h-9 w-full rounded-lg border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
+                            value={String(section.type).toLowerCase()}
+                            onChange={(event) =>
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, type: event.target.value.toUpperCase() } : item)),
+                              )
+                            }
+                          >
+                            {plannerSectionTypeOptions.map((type) => (
+                              <option key={type} value={type}>
+                                {sectionTypeLabels[type]}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>头图标题</Label>
+                          <Input
+                            className="h-9 rounded-lg"
+                            value={section.title}
+                            onChange={(event) =>
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
+                              )
+                            }
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label>头图标题</Label>
-                        <Input
-                          value={section.title}
-                          onChange={(event) =>
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
-                            )
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+                    <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[250px_minmax(0,1fr)]">
                       <div className="space-y-2">
                         <Label>头图目标</Label>
                         <Input
+                          className="h-9 rounded-lg"
                           value={section.goal}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -871,6 +948,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       <div className="space-y-2">
                         <Label>头图文案</Label>
                         <Textarea
+                          className="min-h-[72px] rounded-lg"
                           value={section.copy}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -883,6 +961,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     <div className="space-y-2">
                       <Label>双语视觉 Prompt</Label>
                       <Textarea
+                        className="max-h-[140px] min-h-[84px] rounded-lg"
                         value={section.visualPrompt}
                         onChange={(event) =>
                           setSections((current: any[]) =>
@@ -893,7 +972,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         }
                       />
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       <Button variant="outline" size="sm" onClick={() => moveSectionWithinGroup("hero", section.id, -1)} disabled={index === 0}>
                         <ArrowUp className="mr-1 h-4 w-4" />
                         上移
@@ -940,6 +1019,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       </Button>
                       <Badge variant={getGenerationLabel(section) === "AI 真图" ? "success" : "outline"}>{getGenerationLabel(section)}</Badge>
                     </div>
+                    </div>
                   </CardContent>
                 </Card>
               ))
@@ -963,15 +1043,15 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             {detailSections.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border p-5 text-sm text-muted-foreground">
                 还没有详情页规划项。点击上方“AI 自动规划”后，会自动按分析页配置生成详情页模块。
               </div>
             ) : (
               detailSections.map((section: any, index: number) => (
-                <Card key={section.id} className="border-border/80 shadow-sm">
-                  <CardHeader>
+                <Card key={section.id} className="rounded-2xl border-border/80 shadow-sm">
+                  <CardHeader className="p-4 pb-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <CardTitle className="text-base">详情页 {index + 1}</CardTitle>
@@ -983,43 +1063,51 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-                      <div className="space-y-2">
-                        <Label>模块类型</Label>
-                        <select
-                          className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
-                          value={String(section.type).toLowerCase()}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, type: value.toUpperCase() } : item)),
-                            );
-                          }}
-                        >
-                          {plannerSectionTypeOptions.map((type) => (
-                            <option key={type} value={type}>
-                              {sectionTypeLabels[type]}
-                            </option>
-                          ))}
-                        </select>
+                  <CardContent className={getPlannerCardContentClass(section)}>
+                    <CompletedSectionPreview
+                      section={section}
+                      aspectRatio={previewConfig.imageAspectRatio}
+                      onPreview={openImagePreview}
+                    />
+                    <div className="space-y-3">
+                      <div className="grid gap-3 lg:grid-cols-[190px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)]">
+                        <div className="space-y-2">
+                          <Label>模块类型</Label>
+                          <select
+                            className="flex h-9 w-full rounded-lg border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
+                            value={String(section.type).toLowerCase()}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, type: value.toUpperCase() } : item)),
+                              );
+                            }}
+                          >
+                            {plannerSectionTypeOptions.map((type) => (
+                              <option key={type} value={type}>
+                                {sectionTypeLabels[type]}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>模块标题</Label>
+                          <Input
+                            className="h-9 rounded-lg"
+                            value={section.title}
+                            onChange={(event) =>
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
+                              )
+                            }
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label>模块标题</Label>
-                        <Input
-                          value={section.title}
-                          onChange={(event) =>
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
-                            )
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+                    <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[250px_minmax(0,1fr)]">
                       <div className="space-y-2">
                         <Label>模块目标</Label>
                         <Input
+                          className="h-9 rounded-lg"
                           value={section.goal}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -1031,6 +1119,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       <div className="space-y-2">
                         <Label>模块文案</Label>
                         <Textarea
+                          className="min-h-[72px] rounded-lg"
                           value={section.copy}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -1043,6 +1132,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     <div className="space-y-2">
                       <Label>双语视觉 Prompt</Label>
                       <Textarea
+                        className="max-h-[140px] min-h-[84px] rounded-lg"
                         value={section.visualPrompt}
                         onChange={(event) =>
                           setSections((current: any[]) =>
@@ -1053,7 +1143,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         }
                       />
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       <Button variant="outline" size="sm" onClick={() => moveSectionWithinGroup("detail", section.id, -1)} disabled={index === 0}>
                         <ArrowUp className="mr-1 h-4 w-4" />
                         上移
@@ -1099,6 +1189,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         删除
                       </Button>
                       <Badge variant={getGenerationLabel(section) === "AI 真图" ? "success" : "outline"}>{getGenerationLabel(section)}</Badge>
+                    </div>
                     </div>
                   </CardContent>
                 </Card>
