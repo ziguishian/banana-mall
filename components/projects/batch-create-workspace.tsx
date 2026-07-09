@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { ImageUploadDropzone } from "@/components/shared/image-upload-dropzone";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
 
 type BatchStatus = {
@@ -169,29 +169,25 @@ export function BatchCreateWorkspace() {
               </div>
             </div>
 
-            <Input
+            <ImageUploadDropzone
               id="batch-create-files"
-              type="file"
-              accept="image/*"
+              files={batchFiles}
+              onFilesChange={setBatchFiles}
+              acceptPagePaste
               multiple
-              onChange={(event) => setBatchFiles(Array.from(event.target.files ?? []))}
-              className="hidden"
+              disabled={batchSubmitting}
+              emptyIcon="images"
+              title="点击、拖拽或粘贴多个产品图"
+              description="支持复制文件粘贴、截图粘贴以及 JPG、PNG、WEBP；建议每张图片都是清晰主商品图。"
+              minHeightClassName="min-h-[360px]"
+              previewColumnsClassName="grid-cols-2 sm:grid-cols-3"
             />
-            <label
-              htmlFor="batch-create-files"
-              className="flex min-h-[360px] cursor-pointer flex-col items-center justify-center rounded-[1.5rem] border border-dashed border-slate-300 bg-white/50 p-6 text-center transition hover:bg-slate-50/80 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.04]"
-            >
-              <Images className="h-11 w-11 text-slate-400" />
-              <p className="mt-5 text-lg font-medium text-slate-900 dark:text-white">选择多个产品图</p>
-              <p className="mt-2 max-w-md text-sm leading-7 text-slate-400 dark:text-slate-500">
-                支持 JPG、PNG、WEBP。建议每张图片都是清晰主商品图，系统会按文件逐个处理。
+
+            {batchFiles.length > 0 ? (
+              <p className="rounded-full border border-slate-200 bg-white px-4 py-2 text-center text-sm text-slate-600 dark:border-white/10 dark:bg-black/30 dark:text-slate-300">
+                已选择 {batchFiles.length} 张图片，可点击图片区域继续替换，也可删除后重选。
               </p>
-              {batchFiles.length > 0 ? (
-                <p className="mt-5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 dark:border-white/10 dark:bg-black/30 dark:text-slate-300">
-                  已选择 {batchFiles.length} 张图片
-                </p>
-              ) : null}
-            </label>
+            ) : null}
 
             <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-600 dark:border-white/10 dark:bg-black/20 dark:text-slate-300">
               <input

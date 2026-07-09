@@ -653,7 +653,7 @@ function shouldFallbackToTemplatePlan(error: unknown) {
 
   const message = error.message;
   return /"sections"|expected array|invalid input: expected array|received undefined|section/i.test(message) ||
-    /timed out|timeout|aborted|network|fetch failed|ECONNRESET|ETIMEDOUT|provider request timed out/i.test(message) ||
+    /timed out|timeout|aborted|network|fetch failed|ECONNRESET|ETIMEDOUT|provider request timed out|provider request failed \(504\)|gateway time-out/i.test(message) ||
     message.includes("\u8d85\u65f6") ||
     message.includes("\u7f51\u7edc") ||
     message.includes("Provider \u8bf7\u6c42");
@@ -1089,4 +1089,3 @@ export async function reorderSections(projectId: string, orderedSectionIds: stri
     orderBy: { order: "asc" },
   });
 }
-

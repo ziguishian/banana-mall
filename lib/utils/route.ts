@@ -38,7 +38,7 @@ function mapProviderError(error: Error) {
     };
   }
 
-  if (/timed out|aborterror|network error|fetch failed|请求超时|网络异常/.test(text)) {
+  if (/timed out|aborterror|network error|fetch failed|provider request failed \(504\)|gateway time-out|请求超时|网络异常/.test(text)) {
     return {
       code: "PROVIDER_TIMEOUT",
       message: "当前 Provider 请求超时或网络异常，请稍后重试。",

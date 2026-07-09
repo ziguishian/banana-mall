@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Trash2, UploadCloud } from "lucide-react";
+import { Loader2, UploadCloud } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ImageUploadDropzone } from "@/components/shared/image-upload-dropzone";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,56 +22,6 @@ type ProjectCreateValues = z.input<typeof projectCreateSchema>;
 type UploadBucketKey = "MAIN" | "ANGLE" | "DETAIL" | "REFERENCE";
 type UploadBuckets = Record<UploadBucketKey, File[]>;
 
-function QueuedImagePreview(props: {
-  file: File;
-  index: number;
-  onRemove: (index: number) => void;
-}) {
-  const [previewUrl, setPreviewUrl] = useState<string>("");
-
-  useEffect(() => {
-    const nextUrl = URL.createObjectURL(props.file);
-    setPreviewUrl(nextUrl);
-    return () => URL.revokeObjectURL(nextUrl);
-  }, [props.file]);
-
-  return (
-    <div className="overflow-hidden rounded-2xl border border-border bg-white">
-      <div className="aspect-square bg-slate-100">
-        {previewUrl ? <img src={previewUrl} alt={props.file.name} className="h-full w-full object-cover" /> : null}
-      </div>
-      <div className="space-y-2 p-3">
-        <p className="truncate text-xs text-muted-foreground">{props.file.name}</p>
-        <button
-          type="button"
-          onClick={() => props.onRemove(props.index)}
-          className="inline-flex items-center rounded-full px-2 py-1 text-xs font-medium text-rose-500 transition-all duration-200 hover:-translate-y-0.5 hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]"
-        >
-          <Trash2 className="mr-1 h-3.5 w-3.5" />
-          删除
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PreviewGrid(props: {
-  type: UploadBucketKey;
-  files: File[];
-  onRemove: (index: number) => void;
-}) {
-  if (props.files.length === 0) {
-    return <div className="rounded-2xl bg-muted/70 p-4 text-xs text-muted-foreground">暂未选择文件</div>;
-  }
-
-  return (
-    <div className="grid grid-cols-2 gap-3">
-      {props.files.map((file, index) => (
-        <QueuedImagePreview key={`${file.name}-${file.lastModified}-${index}`} file={file} index={index} onRemove={props.onRemove} />
-      ))}
-    </div>
-  );
-}
 export function ProjectCreator() {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
@@ -131,18 +82,6 @@ export function ProjectCreator() {
       ...current,
       [type]: files,
     }));
-  };
-
-  const handleFileChange = (type: UploadBucketKey, fileList: FileList | null, multiple: boolean) => {
-    const files = fileList ? Array.from(fileList) : [];
-    updateBucket(type, multiple ? files : files.slice(0, 1));
-  };
-
-  const removeQueuedFile = (type: UploadBucketKey, index: number) => {
-    updateBucket(
-      type,
-      uploads[type].filter((_, currentIndex) => currentIndex !== index),
-    );
   };
 
   const onSubmit = form.handleSubmit(async (values) => {
@@ -241,17 +180,18 @@ export function ProjectCreator() {
                 <p className="text-xs text-muted-foreground">{group.hint}</p>
               </div>
 
-              <Input
-                type="file"
-                multiple={group.multiple}
-                accept="image/*"
-                onChange={(event) => handleFileChange(group.type, event.target.files, group.multiple)}
-              />
-
-              <PreviewGrid
-                type={group.type}
+              <ImageUploadDropzone
+                id={`project-create-${group.type.toLowerCase()}-files`}
                 files={uploads[group.type]}
-                onRemove={(index) => removeQueuedFile(group.type, index)}
+                onFilesChange={(files) => updateBucket(group.type, files)}
+                acceptPagePaste={group.type === "MAIN"}
+                multiple={group.multiple}
+                disabled={submitting}
+                emptyIcon="images"
+                title={group.multiple ? "点击、拖拽或粘贴上传图片" : "点击、拖拽或粘贴上传主图"}
+                description="支持复制文件粘贴、截图粘贴以及 JPG、PNG、WEBP。"
+                minHeightClassName="min-h-[160px]"
+                previewColumnsClassName="grid-cols-2"
               />
             </div>
           ))}

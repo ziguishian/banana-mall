@@ -24,6 +24,14 @@ export function pickFirstImageFile(files: Iterable<File> | ArrayLike<File> | nul
   return null;
 }
 
+export function pickImageFiles(files: Iterable<File> | ArrayLike<File> | null | undefined) {
+  if (!files) {
+    return [];
+  }
+
+  return Array.from(files).filter(isImageFile);
+}
+
 export function pickFirstImageFromClipboardItems(items: Iterable<ClipboardFileCandidate> | null | undefined) {
   if (!items) {
     return null;
@@ -41,4 +49,24 @@ export function pickFirstImageFromClipboardItems(items: Iterable<ClipboardFileCa
   }
 
   return null;
+}
+
+export function pickImageFilesFromClipboardItems(items: Iterable<ClipboardFileCandidate> | null | undefined) {
+  if (!items) {
+    return [];
+  }
+
+  const files: File[] = [];
+  for (const item of Array.from(items)) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) {
+      continue;
+    }
+
+    const file = item.getAsFile();
+    if (file && isImageFile(file)) {
+      files.push(file);
+    }
+  }
+
+  return files;
 }
