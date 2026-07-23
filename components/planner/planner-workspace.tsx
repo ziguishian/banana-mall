@@ -96,10 +96,10 @@ const shellItems = [
 function getPreviewConfig(project: any): PreviewConfig {
   const config = project?.modelSnapshot?.previewConfig ?? {};
   return {
-    heroImageCount: Math.min(5, Math.max(3, Number(config.heroImageCount ?? defaultPreviewConfig.heroImageCount))),
+    heroImageCount: Math.min(5, Math.max(1, Number(config.heroImageCount ?? defaultPreviewConfig.heroImageCount))),
     detailSectionCount: Math.min(
       10,
-      Math.max(4, Number(config.detailSectionCount ?? defaultPreviewConfig.detailSectionCount)),
+      Math.max(1, Number(config.detailSectionCount ?? defaultPreviewConfig.detailSectionCount)),
     ),
     imageAspectRatio: config.imageAspectRatio === "3:4" ? "3:4" : defaultPreviewConfig.imageAspectRatio,
     contentLanguage: config.contentLanguage ?? defaultPreviewConfig.contentLanguage,
@@ -123,6 +123,20 @@ function getVisualStyleGuide(project: any): VisualStyleGuide {
     platformLabel: project?.platform,
   });
   return normalizeVisualStyleGuide(project?.modelSnapshot?.visualStyleGuide, fallback);
+}
+
+function getGenerationRequirements(project: any) {
+  const value = project?.analysis?.normalizedResult?.generationRequirements;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function hasSectionsSyncedGenerationRequirements(sections: any[], generationRequirements: string) {
+  if (!generationRequirements) return true;
+  if (!sections.length) return false;
+
+  const requirementMarkers = ["生图补充要求", ...generationRequirements.split(/\s+/).filter((item) => item.length >= 4).slice(0, 3)];
+  const combinedPrompt = sections.map((section) => section.visualPrompt ?? "").join("\n");
+  return requirementMarkers.some((marker) => combinedPrompt.includes(marker));
 }
 
 function progressPercent(progress: BulkProgressState | null) {
@@ -235,6 +249,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
     stage: "idle",
     detail: "",
   });
+  const generationRequirements = useMemo(() => getGenerationRequirements(projectState), [projectState]);
 
   const heroSections = useMemo(
     () => sections.filter((section: any) => section.type === "HERO"),
@@ -253,6 +268,10 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
   const structureMatchesConfig =
     heroSections.length === previewConfig.heroImageCount &&
     detailSections.length === previewConfig.detailSectionCount;
+  const planningSyncedGenerationRequirements = useMemo(
+    () => hasSectionsSyncedGenerationRequirements(sections, generationRequirements),
+    [generationRequirements, sections],
+  );
 
   const refreshProject = async () => {
     const response = await fetch(`/api/projects/${project.id}`);
@@ -728,6 +747,13 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       当前结构与分析页配置不一致，请运行下方的 AI 自动规划同步结构。
                     </div>
                     </>
+                  ) : null}
+                  {generationRequirements && !planningSyncedGenerationRequirements ? (
+                    <NoticeCard
+                      variant="warning"
+                      title="生图补充要求尚未同步到当前规划"
+                      description="分析页已保存多角度、多场景等生图要求，但当前模块规划仍是旧版本。请点击下方 AI 自动规划，让系统重新拆分头图和详情页后再生成图片。"
+                    />
                   ) : null}
                   <Link
                     href={`/projects/${project.id}/analysis`}

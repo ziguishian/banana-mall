@@ -14,6 +14,7 @@ export const productAnalysisOutputSchema = z.object({
   userConcerns: z.array(z.string()),
   recommendedFocusPoints: z.array(z.string()),
   additionalInformation: z.string().default(""),
+  generationRequirements: z.string().default(""),
   suggestedSectionPlan: z.array(
     z.object({
       type: z.string(),

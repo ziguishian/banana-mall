@@ -11,8 +11,8 @@ const planRequestSchema = z.object({
   autoDecideCounts: z.boolean().optional(),
   previewConfig: z
     .object({
-      heroImageCount: z.number().int().min(3).max(5),
-      detailSectionCount: z.number().int().min(4).max(10),
+      heroImageCount: z.number().int().min(1).max(5),
+      detailSectionCount: z.number().int().min(1).max(10),
       imageAspectRatio: z.enum(["3:4", "9:16"]),
       contentLanguage: z.enum(contentLanguageOptions),
     })

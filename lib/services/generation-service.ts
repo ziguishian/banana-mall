@@ -86,6 +86,12 @@ function getProjectVisualStyleGuide(project: { modelSnapshot: unknown; style?: s
   });
   return readVisualStyleGuide(project.modelSnapshot, fallback) ?? fallback;
 }
+
+function readGenerationRequirements(analysis: unknown) {
+  const value = (analysis as Record<string, unknown> | null)?.generationRequirements;
+  return typeof value === "string" ? value : "";
+}
+
 function getSectionAspectRatio(
   section: Pick<PageSection, "type">,
   detailAspectRatio: "3:4" | "9:16",
@@ -639,6 +645,7 @@ async function generateSectionImageInternal(
   const { provider, adapter } = await getProviderAdapter();
   const generationSettings = getGenerationSettings(project);
   const visualStyleGuide = getProjectVisualStyleGuide(project);
+  const generationRequirements = readGenerationRequirements(project.analysis?.normalizedResult);
   const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
   const outputSize = getOutputSize(sectionAspectRatio);
   const modelCandidates = buildImageModelCandidates(provider, options);
@@ -681,12 +688,14 @@ async function generateSectionImageInternal(
           effectiveReferenceAssets as ProductAsset[],
           sectionAspectRatio,
           generationSettings.contentLanguage,
+          generationRequirements,
         )
       : buildSectionImagePrompt(
           section,
           effectiveReferenceAssets as ProductAsset[],
           sectionAspectRatio,
           generationSettings.contentLanguage,
+          generationRequirements,
         );
     const prompt = await buildVisualPromptWithAgent({
       provider,
@@ -900,6 +909,7 @@ export async function editSectionImage(
   const { provider, adapter } = await getProviderAdapter();
   const generationSettings = getGenerationSettings(project);
   const visualStyleGuide = getProjectVisualStyleGuide(project);
+  const generationRequirements = readGenerationRequirements(project.analysis?.normalizedResult);
   const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
   const outputSize = getOutputSize(sectionAspectRatio);
   const modelCandidates = buildImageModelCandidates(provider, {
@@ -957,6 +967,7 @@ export async function editSectionImage(
       editMode,
       sectionAspectRatio,
       effectiveContentLanguage,
+      generationRequirements,
     );
     const prompt = await buildVisualPromptWithAgent({
       provider,

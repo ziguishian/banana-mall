@@ -10,8 +10,8 @@ function readPreviewConfig(snapshot: unknown) {
   const previewConfig = (data.previewConfig as Record<string, unknown> | null) ?? {};
 
   return {
-    heroImageCount: Math.min(5, Math.max(3, Number(previewConfig.heroImageCount ?? 4))),
-    detailSectionCount: Math.min(10, Math.max(4, Number(previewConfig.detailSectionCount ?? 6))),
+    heroImageCount: Math.min(5, Math.max(1, Number(previewConfig.heroImageCount ?? 4))),
+    detailSectionCount: Math.min(10, Math.max(1, Number(previewConfig.detailSectionCount ?? 6))),
   };
 }
 

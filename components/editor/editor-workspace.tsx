@@ -169,8 +169,8 @@ const previewTexts: Partial<Record<
 function getPreviewConfig(project: any): PreviewConfig {
   const config = project?.modelSnapshot?.previewConfig ?? {};
   return {
-    heroImageCount: Math.min(5, Math.max(3, Number(config.heroImageCount ?? 4))),
-    detailSectionCount: Math.min(10, Math.max(4, Number(config.detailSectionCount ?? 6))),
+    heroImageCount: Math.min(5, Math.max(1, Number(config.heroImageCount ?? 4))),
+    detailSectionCount: Math.min(10, Math.max(1, Number(config.detailSectionCount ?? 6))),
     imageAspectRatio: config.imageAspectRatio === "3:4" ? "3:4" : "9:16",
     contentLanguage: normalizeContentLanguage(config.contentLanguage),
   };

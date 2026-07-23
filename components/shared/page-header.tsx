@@ -6,7 +6,7 @@ export function PageHeader(props: {
 }) {
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-      <div className="space-y-2">
+      <div className="min-w-0 space-y-2">
         {props.eyebrow ? (
           <p className="text-xs font-medium uppercase tracking-[0.26em] text-slate-500 dark:text-slate-400">{props.eyebrow}</p>
         ) : null}
@@ -15,7 +15,7 @@ export function PageHeader(props: {
           <p className="max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">{props.description}</p>
         </div>
       </div>
-      {props.actions ? <div className="flex items-center gap-3">{props.actions}</div> : null}
+      {props.actions ? <div className="flex flex-wrap items-center gap-3 md:shrink-0 md:justify-end">{props.actions}</div> : null}
     </div>
   );
 }
