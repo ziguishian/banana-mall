@@ -25,6 +25,7 @@ export interface StructuredRequest<T> {
   timeoutMs?: number;
   monitor?: AiMonitorContext;
   suppressUsageLog?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface TextRequest {
@@ -35,6 +36,7 @@ export interface TextRequest {
   timeoutMs?: number;
   monitor?: AiMonitorContext;
   suppressUsageLog?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface ImageGenerationRequest {
@@ -45,6 +47,7 @@ export interface ImageGenerationRequest {
   referenceImages?: string[];
   timeoutMs?: number;
   monitor?: AiMonitorContext;
+  signal?: AbortSignal;
 }
 
 export interface ImageEditRequest {
@@ -57,6 +60,7 @@ export interface ImageEditRequest {
   referenceImages?: string[];
   timeoutMs?: number;
   monitor?: AiMonitorContext;
+  signal?: AbortSignal;
 }
 
 export interface ImageGenerationResult {

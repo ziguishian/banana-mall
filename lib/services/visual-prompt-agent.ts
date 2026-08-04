@@ -37,6 +37,7 @@ type BuildVisualPromptInput = {
   projectId?: string;
   sectionId?: string;
   operation: string;
+  signal?: AbortSignal;
 };
 
 function readCapabilities(model: ProviderModelRecord) {
@@ -187,6 +188,7 @@ export async function buildVisualPromptWithAgent(input: BuildVisualPromptInput) 
       images: input.referenceImages?.slice(0, 3),
       timeoutMs: VISUAL_PROMPT_AGENT_TIMEOUT_MS,
       suppressUsageLog: true,
+      signal: input.signal,
     });
 
     const parsed = result.parsed;

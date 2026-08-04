@@ -5,16 +5,18 @@ import { Prisma } from "@prisma/client";
 import type { XiaohongshuPlan } from "@/lib/ai/schemas/xiaohongshu";
 import { prisma } from "@/lib/db/prisma";
 import { analyzeProject } from "@/lib/services/analysis-service";
-import { editSectionImage, generateSectionImage } from "@/lib/services/generation-service";
+import { editSectionImage, generateSectionImage, regenerateSectionImage } from "@/lib/services/generation-service";
 import { planSections } from "@/lib/services/planner-service";
 import { createProject } from "@/lib/services/project-service";
 import { runWithProviderCredentials, type RequestProviderCredentials } from "@/lib/services/provider-runtime";
 import {
   assertTaskNotCanceled,
+  cancelTask,
   completeTask,
   createTask,
   failTask,
   getTask,
+  recoverStaleBulkGenerationTask,
   runTaskInBackground,
   startTask,
   updateTaskProgress,
@@ -46,6 +48,11 @@ export type TranslatePageTaskInput = {
   projectId: string;
   targetLanguage: ContentLanguage;
   referenceAssetIds?: string[];
+};
+
+export type GenerateAllSectionsTaskInput = {
+  projectId: string;
+  mode?: "all" | "missing";
 };
 
 type StoredBatchFile = {
@@ -381,6 +388,227 @@ async function runTranslatePageTask(taskId: string, input: TranslatePageTaskInpu
       items,
     });
   }
+}
+
+function isProviderWideImageFailure(message: string) {
+  return (
+    message.includes("当前 Provider 没有可用的真实图片生成端点") ||
+    message.includes("当前 Provider 没有识别到可用于真实图片生成的模型")
+  );
+}
+
+async function runGenerateAllSectionsTask(taskId: string, input: GenerateAllSectionsTaskInput) {
+  const mode = input.mode ?? "all";
+  const sections = await prisma.pageSection.findMany({
+    where: {
+      projectId: input.projectId,
+      ...(mode === "missing" ? { currentImageAssetId: null } : {}),
+    },
+    orderBy: { order: "asc" },
+  });
+  let completedItems = 0;
+  let failedItems = 0;
+  let fallbackCount = 0;
+  let canceledItems = 0;
+
+  await startTask(taskId, {
+    totalItems: sections.length,
+    completedItems,
+    failedItems,
+    fallbackCount,
+    canceledItems,
+    currentTitle: sections[0]?.title ?? null,
+    currentSectionId: sections[0]?.id ?? null,
+    currentTaskId: null,
+    mode,
+    heartbeatAt: new Date().toISOString(),
+    currentStep: "generating_images",
+  });
+
+  const heartbeatTimer = setInterval(() => {
+    void updateTaskProgress(taskId, { heartbeatAt: new Date().toISOString() });
+  }, 15_000);
+
+  try {
+    for (let index = 0; index < sections.length; index += 1) {
+      await assertTaskNotCanceled(taskId);
+      const section = sections[index];
+      await updateTaskProgress(taskId, {
+        totalItems: sections.length,
+        completedItems,
+        failedItems,
+        fallbackCount,
+        canceledItems,
+        currentIndex: index,
+        currentTitle: section.title,
+        currentSectionId: section.id,
+        currentTaskId: null,
+        currentStep: "generating_image",
+      });
+
+      try {
+        const onTaskCreated = async (currentTaskId: string) => {
+          await updateTaskProgress(taskId, {
+            currentTaskId,
+            currentSectionId: section.id,
+            currentTitle: section.title,
+          });
+          const parentTask = await getTask(taskId);
+          const parentOutput =
+            parentTask?.outputPayload &&
+            typeof parentTask.outputPayload === "object" &&
+            !Array.isArray(parentTask.outputPayload)
+              ? (parentTask.outputPayload as Record<string, unknown>)
+              : {};
+          if (parentTask?.status === "CANCELED" || parentOutput.cancelSectionId === section.id) {
+            await cancelTask(currentTaskId);
+          }
+        };
+        const result = section.currentImageAssetId
+          ? await regenerateSectionImage(input.projectId, section.id, null, [], onTaskCreated)
+          : await generateSectionImage(input.projectId, section.id, null, [], onTaskCreated);
+        completedItems += 1;
+        if (result.generationMode === "svg_fallback") {
+          fallbackCount += 1;
+        }
+        await updateTaskProgress(taskId, {
+          totalItems: sections.length,
+          completedItems,
+          failedItems,
+          fallbackCount,
+          canceledItems,
+          currentIndex: index,
+          currentTitle: section.title,
+          currentSectionId: section.id,
+          currentTaskId: null,
+          currentStep: "image_completed",
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "模块生成失败";
+        const canceled = /task canceled/i.test(message);
+        if (canceled) {
+          canceledItems += 1;
+        } else {
+          failedItems += 1;
+        }
+        await updateTaskProgress(taskId, {
+          totalItems: sections.length,
+          completedItems,
+          failedItems,
+          fallbackCount,
+          canceledItems,
+          currentIndex: index,
+          currentTitle: section.title,
+          currentTaskId: null,
+          cancelSectionId: null,
+          currentStep: canceled ? "image_canceled" : "image_failed",
+          lastError: message,
+        });
+
+        if (!canceled && isProviderWideImageFailure(message)) {
+          throw new Error(`批量生成已停止：${message}`);
+        }
+      }
+    }
+
+    await completeTask(taskId, {
+      totalItems: sections.length,
+      completedItems,
+      failedItems,
+      fallbackCount,
+      canceledItems,
+      currentTitle: null,
+      currentSectionId: null,
+      currentTaskId: null,
+      cancelSectionId: null,
+      currentStep: "generate_all_finished",
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Task canceled.") return;
+    await failTask(taskId, error instanceof Error ? error.message : "批量生成失败", {
+      totalItems: sections.length,
+      completedItems,
+      failedItems,
+      fallbackCount,
+      canceledItems,
+      currentStep: "generate_all_failed",
+    });
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
+}
+
+export async function createGenerateAllSectionsTask(
+  input: GenerateAllSectionsTaskInput,
+  credentials: RequestProviderCredentials,
+) {
+  const mode = input.mode ?? "all";
+  const sections = await prisma.pageSection.findMany({
+    where: {
+      projectId: input.projectId,
+      ...(mode === "missing" ? { currentImageAssetId: null } : {}),
+    },
+    orderBy: { order: "asc" },
+    select: { id: true, title: true },
+  });
+  if (sections.length === 0) {
+    throw new Error(mode === "missing" ? "当前规划没有未生成的模块图。" : "请先完成页面规划，再开始批量生成。");
+  }
+
+  const recentThreshold = new Date(Date.now() - 12 * 60 * 60 * 1000);
+  const existingTask = await prisma.generationTask.findFirst({
+    where: {
+      projectId: input.projectId,
+      sectionId: null,
+      taskType: "GENERATE",
+      status: { in: ["PENDING", "RUNNING"] },
+      createdAt: { gte: recentThreshold },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const activeExistingTask = await recoverStaleBulkGenerationTask(existingTask);
+  if (activeExistingTask?.status === "PENDING" || activeExistingTask?.status === "RUNNING") {
+    throw new Error("当前页面的全部模块图仍在生成中，请等待这一轮完成后再试。");
+  }
+
+  const activeSectionTask = await prisma.generationTask.findFirst({
+    where: {
+      projectId: input.projectId,
+      sectionId: { not: null },
+      taskType: { in: ["GENERATE", "REGENERATE"] },
+      status: "RUNNING",
+      startedAt: { gte: new Date(Date.now() - 20 * 60 * 1000) },
+    },
+  });
+  if (activeSectionTask) {
+    throw new Error("当前有模块图正在单独生成，请等待完成后再开始批量生成。");
+  }
+
+  const task = await createTask({
+    projectId: input.projectId,
+    taskType: "GENERATE",
+    status: "PENDING",
+    inputPayload: input,
+    outputPayload: {
+      totalItems: sections.length,
+      completedItems: 0,
+      failedItems: 0,
+      fallbackCount: 0,
+      canceledItems: 0,
+      currentTitle: sections[0]?.title ?? null,
+      currentSectionId: sections[0]?.id ?? null,
+      currentTaskId: null,
+      cancelSectionId: null,
+      mode,
+      heartbeatAt: new Date().toISOString(),
+      currentStep: "queued",
+    },
+  });
+
+  runTaskInBackground(() =>
+    runWithProviderCredentials(credentials, () => runGenerateAllSectionsTask(task.id, input)),
+  );
+  return getTask(task.id);
 }
 
 export async function createTranslatePageTask(input: TranslatePageTaskInput, credentials: RequestProviderCredentials) {
