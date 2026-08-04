@@ -154,6 +154,9 @@ export async function cancelTask(taskId: string) {
   if (!task) {
     throw new Error("Task not found.");
   }
+  if (task.status === "SUCCESS" || task.status === "FAILED" || task.status === "CANCELED") {
+    return task;
+  }
 
   const output = asRecord(task.outputPayload);
   const currentTaskId = typeof output.currentTaskId === "string" ? output.currentTaskId : null;

@@ -6,8 +6,17 @@ import { buildSectionPlanningPrompt, buildVisualStyleGuidePrompt } from "@/lib/a
 import { sectionPlanOutputSchema, visualStyleGuideSchema } from "@/lib/ai/schemas/section-plan";
 import { prisma } from "@/lib/db/prisma";
 import { readStorageFile } from "@/lib/storage/asset-manager";
+import { patchProjectModelSnapshot } from "@/lib/services/project-model-snapshot-service";
 import { getProviderAdapter } from "@/lib/services/provider-service";
-import { completeTask, createTask, failTask, findRecentRunningTask } from "@/lib/services/task-service";
+import {
+  assertTaskNotCanceled,
+  completeTask,
+  createTask,
+  failTask,
+  findRecentRunningTask,
+  registerTaskAbortController,
+  releaseTaskAbortController,
+} from "@/lib/services/task-service";
 import { contentLanguageOptions, normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
 import { buildDefaultVisualStyleGuide, hasVisualStyleGuide, normalizeVisualStyleGuide, readVisualStyleGuide } from "@/lib/utils/visual-style-guide";
 import type { SectionTypeKey } from "@/types/domain";
@@ -386,14 +395,6 @@ function pickMultimodalPlanningModel(models: PlanningModelRecord[], preferredMod
   );
 }
 
-function readPreviewMeta(snapshot: unknown) {
-  const raw = ((snapshot as Record<string, unknown> | null) ?? {}).previewConfig as Record<string, unknown> | null;
-  return {
-    imageAspectRatio: raw?.imageAspectRatio === "3:4" ? "3:4" : "9:16",
-    contentLanguage: normalizeContentLanguage(raw?.contentLanguage),
-  } as const;
-}
-
 async function normalizeProjectSections(projectId: string) {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -436,22 +437,10 @@ async function normalizeProjectSections(projectId: string) {
     }),
   );
 
-  const currentSnapshot = (project.modelSnapshot as Record<string, unknown> | null) ?? {};
-  const currentPreviewMeta = readPreviewMeta(project.modelSnapshot);
-
-  await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      modelSnapshot: {
-        ...currentSnapshot,
-        previewConfig: {
-          ...(currentSnapshot.previewConfig as Record<string, unknown> | null),
-          heroImageCount: heroCursor,
-          detailSectionCount: detailCursor,
-          imageAspectRatio: currentPreviewMeta.imageAspectRatio,
-          contentLanguage: currentPreviewMeta.contentLanguage,
-        },
-      } as Prisma.InputJsonValue,
+  await patchProjectModelSnapshot(projectId, {
+    previewConfig: {
+      heroImageCount: heroCursor,
+      detailSectionCount: detailCursor,
     },
   });
 }
@@ -738,7 +727,11 @@ function shouldFallbackToTemplatePlan(error: unknown) {
     message.includes("Provider \u8bf7\u6c42");
 }
 
-async function decidePreviewConfigWithAi(projectId: string, preferredModelId?: string | null) {
+async function decidePreviewConfigWithAi(
+  projectId: string,
+  preferredModelId?: string | null,
+  signal?: AbortSignal,
+) {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     include: { analysis: true, assets: true },
@@ -768,6 +761,7 @@ async function decidePreviewConfigWithAi(projectId: string, preferredModelId?: s
     schema: previewDecisionSchema,
     images: planningReferenceImages,
     timeoutMs: 90000,
+    signal,
     monitor: {
       projectId,
       operation: "preview_count_planning",
@@ -782,16 +776,13 @@ async function decidePreviewConfigWithAi(projectId: string, preferredModelId?: s
     contentLanguage: current.contentLanguage,
   });
 
-  await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      modelSnapshot: {
-        ...(project.modelSnapshot as Record<string, unknown> | null),
-        previewConfig: decided,
-        previewConfigSource: "ai",
-        previewConfigReason: result.parsed.reason,
-      } as Prisma.InputJsonValue,
+  await patchProjectModelSnapshot(projectId, {
+    previewConfig: {
+      heroImageCount: decided.heroImageCount,
+      detailSectionCount: decided.detailSectionCount,
     },
+    previewConfigSource: "ai",
+    previewConfigReason: result.parsed.reason,
   });
 
   return {
@@ -837,21 +828,23 @@ export async function planSections(
     options?.previewConfig != null ? previewConfigSchema.parse(options.previewConfig) : readPreviewConfig(project.modelSnapshot);
   let previewDecisionReason = "";
 
-  if (options?.autoDecideCounts) {
-    const decision = await decidePreviewConfigWithAi(projectId, model);
-    previewConfig = decision.previewConfig;
-    previewDecisionReason = decision.reason;
-  }
-
-  const planningReferenceImages = await collectPlanningReferenceImages(project.assets as PlanningAsset[]);
-
   const task = await createTask({
     projectId,
     taskType: "PLAN",
     inputPayload: { model, previewConfig, autoDecideCounts: Boolean(options?.autoDecideCounts) },
   });
+  const taskSignal = registerTaskAbortController(task.id);
 
   try {
+    if (options?.autoDecideCounts) {
+      const decision = await decidePreviewConfigWithAi(projectId, model, taskSignal);
+      previewConfig = decision.previewConfig;
+      previewDecisionReason = decision.reason;
+    } else {
+      await patchProjectModelSnapshot(projectId, { previewConfig });
+    }
+
+    const planningReferenceImages = await collectPlanningReferenceImages(project.assets as PlanningAsset[]);
     const prompt = buildSectionPlanningPrompt(
       project.analysis.normalizedResult as never,
       project.style,
@@ -868,12 +861,14 @@ export async function planSections(
       schema: sectionPlanOutputSchema,
       images: planningReferenceImages,
       timeoutMs: 180000,
+      signal: taskSignal,
       monitor: {
         projectId,
         operation: "section_planning",
       },
     });
 
+    await assertTaskNotCanceled(task.id);
     await prisma.pageSection.deleteMany({ where: { projectId } });
 
     const rawSections = Array.isArray(result.parsed.sections) ? result.parsed.sections : [];
@@ -906,19 +901,18 @@ export async function planSections(
       })),
     });
 
+    await assertTaskNotCanceled(task.id);
     await prisma.project.update({
       where: { id: projectId },
       data: {
         status: "PLANNED",
-        modelSnapshot: {
-          ...(project.modelSnapshot as Record<string, unknown> | null),
-          planningModelId: model,
-          previewConfig,
-          previewConfigSource: options?.autoDecideCounts ? "ai" : "manual",
-          previewConfigReason: previewDecisionReason,
-          visualStyleGuide,
-        } as Prisma.InputJsonValue,
       },
+    });
+    await patchProjectModelSnapshot(projectId, {
+      planningModelId: model,
+      previewConfigSource: options?.autoDecideCounts ? "ai" : "manual",
+      previewConfigReason: previewDecisionReason,
+      visualStyleGuide,
     });
 
     const saved = await prisma.pageSection.findMany({
@@ -933,8 +927,13 @@ export async function planSections(
       visualStyleGuide,
     };
   } catch (error) {
+    if (error instanceof Error && error.message === "Task canceled.") {
+      throw error;
+    }
+
     if (shouldFallbackToTemplatePlan(error)) {
       try {
+        await assertTaskNotCanceled(task.id);
         await prisma.pageSection.deleteMany({ where: { projectId } });
         const fallbackSections = buildFallbackPlanFromTemplates(
           previewConfig.heroImageCount,
@@ -955,21 +954,20 @@ export async function planSections(
           })),
         });
 
+        await assertTaskNotCanceled(task.id);
         const fallbackVisualStyleGuide = resolvePlanningVisualStyleGuide(project);
 
         await prisma.project.update({
           where: { id: projectId },
           data: {
             status: "PLANNED",
-            modelSnapshot: {
-              ...(project.modelSnapshot as Record<string, unknown> | null),
-              planningModelId: model,
-              previewConfig,
-              previewConfigSource: options?.autoDecideCounts ? "ai" : "manual",
-              previewConfigReason: `${previewDecisionReason ? `${previewDecisionReason}；` : ""}AI 返回结构不完整，已自动切换为模板规划。`,
-              visualStyleGuide: fallbackVisualStyleGuide,
-            } as Prisma.InputJsonValue,
           },
+        });
+        await patchProjectModelSnapshot(projectId, {
+          planningModelId: model,
+          previewConfigSource: options?.autoDecideCounts ? "ai" : "manual",
+          previewConfigReason: `${previewDecisionReason ? `${previewDecisionReason}；` : ""}AI 返回结构不完整，已自动切换为模板规划。`,
+          visualStyleGuide: fallbackVisualStyleGuide,
         });
 
         const saved = await prisma.pageSection.findMany({
@@ -992,7 +990,10 @@ export async function planSections(
           fallbackMode: "template_plan" as const,
           visualStyleGuide: fallbackVisualStyleGuide,
         };
-      } catch {
+      } catch (fallbackError) {
+        if (fallbackError instanceof Error && fallbackError.message === "Task canceled.") {
+          throw fallbackError;
+        }
         await failTask(task.id, "AI 规划结果格式不完整，且模板规划回退失败。");
         throw new Error("AI 规划结果格式不完整，请稍后重试。");
       }
@@ -1006,6 +1007,8 @@ export async function planSections(
         : "页面规划失败";
     await failTask(task.id, message);
     throw new Error(message);
+  } finally {
+    releaseTaskAbortController(task.id);
   }
 }
 
@@ -1053,16 +1056,10 @@ export async function regenerateVisualStyleGuide(projectId: string, preferredMod
     buildProjectVisualStyleGuideFallback(project),
   );
 
-  const updated = await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      modelSnapshot: {
-        ...((project.modelSnapshot as Record<string, unknown> | null) ?? {}),
-        visualStyleGuide,
-        visualStyleGuideModelId: model,
-        visualStyleGuideUpdatedAt: new Date().toISOString(),
-      } as Prisma.InputJsonValue,
-    },
+  const updated = await patchProjectModelSnapshot(projectId, {
+    visualStyleGuide,
+    visualStyleGuideModelId: model,
+    visualStyleGuideUpdatedAt: new Date().toISOString(),
   });
 
   return {

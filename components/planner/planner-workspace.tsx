@@ -316,6 +316,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
   const [sections, setSections] = useState(project.sections ?? []);
   const [planning, setPlanning] = useState(Boolean(initialPlanningTask));
   const [planningTaskId, setPlanningTaskId] = useState<string | null>(initialPlanningTask?.id ?? null);
+  const [cancelingPlanning, setCancelingPlanning] = useState(false);
   const [bulkGenerating, setBulkGenerating] = useState(Boolean(initialBulkGenerationTask));
   const [bulkTaskId, setBulkTaskId] = useState<string | null>(initialBulkGenerationTask?.id ?? null);
   const [cancelingSectionId, setCancelingSectionId] = useState<string | null>(null);
@@ -417,6 +418,8 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
 
         if (task.status === "SUCCESS") {
           toast.success("AI 已完成头图与详情页规划");
+        } else if (task.status === "CANCELED") {
+          toast.message("已停止 AI 自动规划");
         } else {
           toast.error(
             task.status === "RUNNING" || task.status === "PENDING"
@@ -531,17 +534,14 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
 
     try {
       const nextGenerationSettings = options?.generationSettings ?? generationSettings;
-      const mergedSnapshot = {
-        ...(projectState.modelSnapshot ?? {}),
-        previewConfig,
-        generationSettings: nextGenerationSettings,
-      };
-
       const response = await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          modelSnapshot: mergedSnapshot,
+          modelSnapshot: {
+            previewConfig,
+            generationSettings: nextGenerationSettings,
+          },
         }),
       });
 
@@ -646,17 +646,40 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "页面自动规划失败";
-      toast.error(
-        /"sections"|expected array|received undefined/i.test(message)
-          ? "AI 规划结果格式不完整，请重试；如果仍失败，系统会自动切换为模板规划。"
-          : message,
-      );
+      if (!/task canceled|canceled by user/i.test(message)) {
+        toast.error(
+          /"sections"|expected array|received undefined/i.test(message)
+            ? "AI 规划结果格式不完整，请重试；如果仍失败，系统会自动切换为模板规划。"
+            : message,
+        );
+      }
     } finally {
       setPlanning(false);
       setPlanningProgress({
         stage: "idle",
         detail: "",
       });
+    }
+  };
+
+  const cancelPlanning = async () => {
+    setCancelingPlanning(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/cancel-planning`, { method: "POST" });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error?.message ?? "停止 AI 自动规划失败");
+      }
+
+      setPlanning(false);
+      setPlanningTaskId(null);
+      setPlanningProgress({ stage: "idle", detail: "" });
+      await refreshProject();
+      toast.message(payload.data?.canceled ? "已停止 AI 自动规划" : "规划任务已经结束");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "停止 AI 自动规划失败");
+    } finally {
+      setCancelingPlanning(false);
     }
   };
 
@@ -1042,14 +1065,30 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     AI 会直接输出独立的头图规划项和详情页规划项，头图永远排在前面，页面壳层不进入可规划模块。你手动新增、删除或改类型后，数量会自动回写并与分析页配置保持同步。
                   </p>
                 </div>
-                <Button
-                  onClick={autoPlan}
-                  disabled={planning || bulkGenerating}
-                  className="h-10 shrink-0 whitespace-nowrap px-5 text-sm md:min-w-[240px]"
-                >
-                  <Sparkles className="mr-2 h-4 w-4" />
-                  {planning ? "AI 正在规划头图与详情页…" : hasPlannedSections ? "重新规划头图与详情页" : "AI 自动规划"}
-                </Button>
+                {planning ? (
+                  <Button
+                    variant="destructive"
+                    onClick={cancelPlanning}
+                    disabled={cancelingPlanning}
+                    className="h-10 shrink-0 whitespace-nowrap px-5 text-sm md:min-w-[240px]"
+                  >
+                    {cancelingPlanning ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Square className="mr-2 h-4 w-4" />
+                    )}
+                    {cancelingPlanning ? "正在停止规划…" : "停止 AI 自动规划"}
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={autoPlan}
+                    disabled={bulkGenerating}
+                    className="h-10 shrink-0 whitespace-nowrap px-5 text-sm md:min-w-[240px]"
+                  >
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    {hasPlannedSections ? "重新规划头图与详情页" : "AI 自动规划"}
+                  </Button>
+                )}
               </div>
 
               {planning ? (

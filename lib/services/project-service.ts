@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 
 import { prisma } from "@/lib/db/prisma";
+import { patchProjectModelSnapshot } from "@/lib/services/project-model-snapshot-service";
 import { assetPublicUrl, deleteAssetRecord } from "@/lib/storage/asset-manager";
 import { env } from "@/lib/utils/env";
 
@@ -173,13 +174,17 @@ export async function getProjectDetail(projectId: string) {
 }
 
 export async function updateProject(projectId: string, input: Record<string, unknown>) {
-  await prisma.project.update({
-    where: { id: projectId },
-    data: input,
-  });
+  const { modelSnapshot, ...projectPatch } = input;
+  if (Object.keys(projectPatch).length > 0) {
+    await prisma.project.update({
+      where: { id: projectId },
+      data: projectPatch,
+    });
+  }
 
   if ("modelSnapshot" in input) {
-    await pruneProjectToPreviewConfig(projectId, input.modelSnapshot);
+    const updated = await patchProjectModelSnapshot(projectId, modelSnapshot);
+    await pruneProjectToPreviewConfig(projectId, updated?.modelSnapshot);
   }
 
   return getProjectDetail(projectId);

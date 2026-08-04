@@ -94,15 +94,12 @@ export function ProjectOutputConfigCard({
   const saveConfig = async () => {
     try {
       setSaving(true);
-      const snapshot = ((project.modelSnapshot as Record<string, unknown> | null) ?? {}) as Record<string, unknown>;
       const response = await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           modelSnapshot: {
-            ...snapshot,
             previewConfig: {
-              ...((snapshot.previewConfig as Record<string, unknown> | null) ?? {}),
               heroImageCount: formState.heroImageCount,
               detailSectionCount: formState.detailSectionCount,
               imageAspectRatio: formState.imageAspectRatio,
