@@ -32,6 +32,7 @@ type TaskPayload = {
   errorMessage?: string | null;
 };
 type ImageAspectRatio = "3:4" | "9:16";
+type SectionAction = "generate" | "regenerate" | "repaint" | "enhance";
 type SectionKind =
   | "hero"
   | "selling_points"
@@ -316,7 +317,8 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const { openImagePreview } = useImagePreview();
   const [project, setProject] = useState(initialProject);
   const [checkedReferences, setCheckedReferences] = useState<string[]>([]);
-  const [runningAction, setRunningAction] = useState<string | null>(null);
+  const [runningSectionActions, setRunningSectionActions] = useState<Record<string, SectionAction>>({});
+  const [runningPageAction, setRunningPageAction] = useState<"translate-page" | null>(null);
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
@@ -371,6 +373,10 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   );
   const hasGeneratedImage = Boolean(selectedSection?.imageUrl);
   const generatedSections = useMemo(() => project.sections.filter((section: any) => Boolean(section.imageUrl)), [project.sections]);
+  const selectedSectionAction = selectedSection ? runningSectionActions[selectedSection.id] ?? null : null;
+  const hasRunningSectionAction = Object.keys(runningSectionActions).length > 0;
+  const selectedSectionIsGenerating = selectedSection?.status === "GENERATING" || Boolean(selectedSectionAction);
+  const hasGeneratingSection = hasRunningSectionAction || project.sections.some((section: any) => section.status === "GENERATING");
 
   useEffect(() => {
     if (selectedHeroIndex >= galleryImages.length) {
@@ -413,6 +419,26 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     }
   };
 
+  const setSectionStatus = (sectionId: string, status: string) => {
+    setProject((current: any) => ({
+      ...current,
+      sections: current.sections.map((section: any) => (section.id === sectionId ? { ...section, status } : section)),
+    }));
+  };
+
+  const startSectionAction = (sectionId: string, action: SectionAction) => {
+    setRunningSectionActions((current) => ({ ...current, [sectionId]: action }));
+    setSectionStatus(sectionId, "GENERATING");
+  };
+
+  const finishSectionAction = (sectionId: string) => {
+    setRunningSectionActions((current) => {
+      const next = { ...current };
+      delete next[sectionId];
+      return next;
+    });
+  };
+
   const saveSection = async () => {
     if (!selectedSection) return;
 
@@ -439,10 +465,12 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
 
   const runGeneration = async (kind: "generate" | "regenerate") => {
     if (!selectedSection) return;
-    setRunningAction(kind);
+    const sectionId = selectedSection.id;
+    const previousStatus = selectedSection.status;
+    startSectionAction(sectionId, kind);
 
     try {
-      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/${kind}`, {
+      const response = await fetch(`/api/projects/${project.id}/sections/${sectionId}/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ referenceAssetIds: checkedReferences }),
@@ -450,6 +478,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       const payload = await response.json();
       if (!payload.success) {
         toast.error(payload.error?.message ?? "图像生成失败");
+        await refreshProject();
         return;
       }
       if (payload.data?.generationMode === "svg_fallback") {
@@ -458,17 +487,24 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         toast.success(kind === "generate" ? "模块图已生成并自动保存到当前项目" : "模块图已重新生成并自动保存到版本历史");
       }
       await refreshProject();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "图像生成失败");
+      setSectionStatus(sectionId, previousStatus);
     } finally {
-      setRunningAction(null);
+      finishSectionAction(sectionId);
     }
   };
 
   const runImageEdit = async (editMode: "repaint" | "enhance" | "translate", targetLanguage?: ContentLanguage) => {
     if (!selectedSection) return;
-    setRunningAction(editMode);
+    const sectionId = selectedSection.id;
+    const previousStatus = selectedSection.status;
+    if (editMode !== "translate") {
+      startSectionAction(sectionId, editMode);
+    }
 
     try {
-      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/edit`, {
+      const response = await fetch(`/api/projects/${project.id}/sections/${sectionId}/edit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ referenceAssetIds: checkedReferences, editMode, targetLanguage }),
@@ -476,6 +512,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       const payload = await response.json();
       if (!payload.success) {
         toast.error(payload.error?.message ?? "基于当前图编辑失败");
+        await refreshProject();
         return;
       }
       if (payload.data?.generationMode === "svg_fallback") {
@@ -484,8 +521,15 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         toast.success(editMode === "translate" ? "已将当前图转为目标语言，并自动保存新版本" : editMode === "repaint" ? "已基于当前图完成重绘，并自动保存新版本" : "已基于当前图完成增强，并自动保存新版本");
       }
       await refreshProject();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "基于当前图编辑失败");
+      if (editMode !== "translate") {
+        setSectionStatus(sectionId, previousStatus);
+      }
     } finally {
-      setRunningAction(null);
+      if (editMode !== "translate") {
+        finishSectionAction(sectionId);
+      }
     }
   };
 
@@ -496,7 +540,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       return;
     }
 
-    setRunningAction("translate-page");
+    setRunningPageAction("translate-page");
     try {
       const response = await fetch(`/api/projects/${project.id}/translate-page`, {
         method: "POST",
@@ -542,7 +586,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "整页语言转换失败");
     } finally {
-      setRunningAction(null);
+      setRunningPageAction(null);
     }
   };
 
@@ -593,7 +637,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
               >
                 <span className="absolute left-3 top-2.5 text-xs font-medium tracking-[0.14em] text-muted-foreground">#{index + 1}</span>
                 <div className="absolute right-2.5 top-1.5">
-                  <StatusBadge value={section.status} />
+                  <StatusBadge value={runningSectionActions[section.id] ? "GENERATING" : section.status} />
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-2.5">
@@ -810,22 +854,26 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                       <Save className="h-3.5 w-3.5" />
                       保存
                     </Button>
-                    <Button onClick={() => runGeneration(hasGeneratedImage ? "regenerate" : "generate")} disabled={Boolean(runningAction)} variant="outline" className={compactActionButtonClass}>
-                      {runningAction === "generate" || runningAction === "regenerate" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                    <Button onClick={() => runGeneration(hasGeneratedImage ? "regenerate" : "generate")} disabled={selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
+                      {selectedSectionIsGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
                       {hasGeneratedImage ? "重新生成当前图" : "生成当前模块图"}
                     </Button>
-                    {runningAction ? <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{getActionText(runningAction)}</span> : null}
+                    {selectedSectionIsGenerating ? (
+                      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                        {selectedSectionAction ? getActionText(selectedSectionAction) : "当前模块图正在生成，请稍候..."}
+                      </span>
+                    ) : null}
                   </div>
 
                   <div className="grid gap-2">
                     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 p-1.5">
                       <span className="px-1 text-xs font-medium text-muted-foreground">当前图</span>
-                      <Button onClick={() => runImageEdit("repaint")} disabled={!hasGeneratedImage || Boolean(runningAction)} variant="outline" className={compactActionButtonClass}>
-                        {runningAction === "repaint" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                      <Button onClick={() => runImageEdit("repaint")} disabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
+                        {selectedSectionAction === "repaint" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
                         重绘
                       </Button>
-                      <Button onClick={() => runImageEdit("enhance")} disabled={!hasGeneratedImage || Boolean(runningAction)} variant="outline" className={compactActionButtonClass}>
-                        {runningAction === "enhance" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      <Button onClick={() => runImageEdit("enhance")} disabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
+                        {selectedSectionAction === "enhance" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                         增强
                       </Button>
                     </div>
@@ -849,11 +897,11 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                       <Button
                         type="button"
                         onClick={translateGeneratedDetailPage}
-                        disabled={generatedSections.length === 0 || Boolean(runningAction)}
+                        disabled={generatedSections.length === 0 || hasGeneratingSection || Boolean(runningPageAction)}
                         variant="outline"
                         className={compactActionButtonClass}
                       >
-                        {runningAction === "translate-page" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Languages className="h-3.5 w-3.5" />}
+                        {runningPageAction === "translate-page" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Languages className="h-3.5 w-3.5" />}
                         一键转换
                       </Button>
                     </div>
@@ -925,18 +973,38 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                 ) : (
                   <div className="space-y-1.5 rounded-xl border border-border p-2.5">
                     {referenceAssets.map((asset: any) => (
-                      <label key={asset.id} className="flex items-center gap-2 rounded-lg border border-transparent px-2 py-1.5 transition-colors hover:border-border hover:bg-muted/40">
-                        <input
-                          type="checkbox"
-                          checked={checkedReferences.includes(asset.id)}
-                          onChange={(event) => {
-                            setCheckedReferences((current) =>
-                              event.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id),
-                            );
-                          }}
-                        />
-                        <span className="text-sm">{assetTypeLabels[asset.type] ?? asset.fileName}</span>
-                      </label>
+                      <div
+                        key={asset.id}
+                        className="flex min-h-12 items-center gap-2 rounded-lg border border-transparent px-2 py-1 transition-colors hover:border-border hover:bg-muted/40"
+                      >
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch">
+                          <input
+                            type="checkbox"
+                            checked={checkedReferences.includes(asset.id)}
+                            onChange={(event) => {
+                              setCheckedReferences((current) =>
+                                event.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id),
+                              );
+                            }}
+                          />
+                          <span className="truncate text-sm">{assetTypeLabels[asset.type] ?? asset.fileName}</span>
+                        </label>
+                        <button
+                          type="button"
+                          className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-border bg-muted transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                          title={`预览${asset.fileName}`}
+                          aria-label={`预览${asset.fileName}`}
+                          onClick={() =>
+                            openImagePreview({
+                              url: asset.url,
+                              title: asset.fileName,
+                              meta: assetTypeLabels[asset.type] ?? asset.type,
+                            })
+                          }
+                        >
+                          <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover" />
+                        </button>
+                      </div>
                     ))}
                   </div>
                 )}
