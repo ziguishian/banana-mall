@@ -352,6 +352,9 @@ export function AnalysisWorkspace({
               {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
               重新运行 AI 商品分析
             </Button>
+            <p className="text-center text-xs text-muted-foreground">
+              商品分析图最多取前 10 张，请合理规划分析图。
+            </p>
           </CardContent>
         </Card>
 

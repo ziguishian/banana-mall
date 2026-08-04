@@ -8,6 +8,8 @@ import { getProviderAdapter } from "@/lib/services/provider-service";
 import { completeTask, createTask, failTask, findRecentRunningTask } from "@/lib/services/task-service";
 import { readStorageFile } from "@/lib/storage/asset-manager";
 
+const MAX_ANALYSIS_IMAGES = 10;
+
 function normalizeModelId(value: string) {
   return value.toLowerCase();
 }
@@ -185,7 +187,9 @@ export async function analyzeProject(projectId: string, preferredModelId?: strin
   });
 
   try {
-    const imageUrls = await Promise.all(project.assets.slice(0, 6).map((asset) => assetToDataUrl(asset)));
+    const imageUrls = await Promise.all(
+      project.assets.slice(0, MAX_ANALYSIS_IMAGES).map((asset) => assetToDataUrl(asset)),
+    );
     const prompt = buildProductAnalysisPrompt(project.assets);
 
     let parsedResult: Prisma.JsonObject;
