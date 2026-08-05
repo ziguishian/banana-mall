@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ImagePlus, Languages, Loader2, MessageCircle, RotateCcw, Save, ShoppingCart, Sparkles, Star, ZoomIn } from "lucide-react";
+import { ImagePlus, Languages, Loader2, MessageCircle, RotateCcw, Save, ShoppingCart, Sparkles, Square, Star, ZoomIn } from "lucide-react";
 
 import { useImagePreview } from "@/components/shared/image-preview-provider";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -318,6 +318,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const [project, setProject] = useState(initialProject);
   const [checkedReferences, setCheckedReferences] = useState<string[]>([]);
   const [runningSectionActions, setRunningSectionActions] = useState<Record<string, SectionAction>>({});
+  const [cancelingSectionId, setCancelingSectionId] = useState<string | null>(null);
   const [runningPageAction, setRunningPageAction] = useState<"translate-page" | null>(null);
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
@@ -477,7 +478,12 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       });
       const payload = await response.json();
       if (!payload.success) {
-        toast.error(payload.error?.message ?? "图像生成失败");
+        const message = payload.error?.message ?? "图像生成失败";
+        if (/task canceled/i.test(message)) {
+          toast.message("已终止当前模块图生成");
+        } else {
+          toast.error(message);
+        }
         await refreshProject();
         return;
       }
@@ -488,10 +494,38 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       }
       await refreshProject();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "图像生成失败");
+      if (error instanceof Error && /task canceled/i.test(error.message)) {
+        toast.message("已终止当前模块图生成");
+      } else {
+        toast.error(error instanceof Error ? error.message : "图像生成失败");
+      }
       setSectionStatus(sectionId, previousStatus);
     } finally {
       finishSectionAction(sectionId);
+    }
+  };
+
+  const cancelSectionGeneration = async () => {
+    if (!selectedSection || !selectedSectionIsGenerating || cancelingSectionId) return;
+
+    const sectionId = selectedSection.id;
+    setCancelingSectionId(sectionId);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/sections/${sectionId}/cancel-generation`, {
+        method: "POST",
+      });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error?.message ?? "终止当前模块图失败");
+      }
+
+      finishSectionAction(sectionId);
+      await refreshProject();
+      toast.message(payload.data?.canceled === false ? "当前模块没有可终止的生成任务" : "已终止当前模块图生成");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "终止当前模块图失败");
+    } finally {
+      setCancelingSectionId(null);
     }
   };
 
@@ -511,7 +545,12 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       });
       const payload = await response.json();
       if (!payload.success) {
-        toast.error(payload.error?.message ?? "基于当前图编辑失败");
+        const message = payload.error?.message ?? "基于当前图编辑失败";
+        if (/task canceled/i.test(message)) {
+          toast.message("已终止当前模块图编辑");
+        } else {
+          toast.error(message);
+        }
         await refreshProject();
         return;
       }
@@ -522,7 +561,11 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       }
       await refreshProject();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "基于当前图编辑失败");
+      if (error instanceof Error && /task canceled/i.test(error.message)) {
+        toast.message("已终止当前模块图编辑");
+      } else {
+        toast.error(error instanceof Error ? error.message : "基于当前图编辑失败");
+      }
       if (editMode !== "translate") {
         setSectionStatus(sectionId, previousStatus);
       }
@@ -859,9 +902,21 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                       {hasGeneratedImage ? "重新生成当前图" : "生成当前模块图"}
                     </Button>
                     {selectedSectionIsGenerating ? (
-                      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                        {selectedSectionAction ? getActionText(selectedSectionAction) : "当前模块图正在生成，请稍候..."}
-                      </span>
+                      <>
+                        <Button
+                          type="button"
+                          onClick={cancelSectionGeneration}
+                          disabled={cancelingSectionId === selectedSection.id || Boolean(runningPageAction)}
+                          variant="destructive"
+                          className={compactActionButtonClass}
+                        >
+                          {cancelingSectionId === selectedSection.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
+                          {cancelingSectionId === selectedSection.id ? "终止中..." : "终止生成"}
+                        </Button>
+                        <span className="basis-full min-w-0 truncate px-1 text-xs text-muted-foreground">
+                          {selectedSectionAction ? getActionText(selectedSectionAction) : "当前模块图正在生成，请稍候..."}
+                        </span>
+                      </>
                     ) : null}
                   </div>
 
