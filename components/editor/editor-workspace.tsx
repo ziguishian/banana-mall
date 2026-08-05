@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useEditorStore } from "@/hooks/use-editor-store";
+import { fileToBase64Payload } from "@/lib/utils/base64-upload";
 import { contentLanguageLabels, contentLanguageOptions, normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
 
 interface EditorWorkspaceProps {
@@ -319,9 +320,11 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const [checkedReferences, setCheckedReferences] = useState<string[]>([]);
   const [runningSectionActions, setRunningSectionActions] = useState<Record<string, SectionAction>>({});
   const [cancelingSectionId, setCancelingSectionId] = useState<string | null>(null);
+  const [referenceUploading, setReferenceUploading] = useState(false);
   const [runningPageAction, setRunningPageAction] = useState<"translate-page" | null>(null);
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
+  const referenceUploadInputRef = useRef<HTMLInputElement | null>(null);
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
   const previewSectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const { selectedSectionId, setSelectedSectionId } = useEditorStore();
@@ -526,6 +529,43 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       toast.error(error instanceof Error ? error.message : "终止当前模块图失败");
     } finally {
       setCancelingSectionId(null);
+    }
+  };
+
+  const uploadReferenceImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+
+    setReferenceUploading(true);
+    const uploadedAssetIds: string[] = [];
+    try {
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) {
+          throw new Error(`${file.name} 不是有效的图片文件`);
+        }
+
+        const base64Payload = await fileToBase64Payload(file);
+        const response = await fetch(`/api/projects/${project.id}/assets/upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "REFERENCE", ...base64Payload }),
+        });
+        const payload = await response.json();
+        if (!payload.success || !payload.data?.id) {
+          throw new Error(payload.error?.message ?? `${file.name} 上传失败`);
+        }
+        uploadedAssetIds.push(payload.data.id);
+      }
+
+      setCheckedReferences((current) => [...new Set([...current, ...uploadedAssetIds])]);
+      await refreshProject();
+      toast.success(`已添加 ${uploadedAssetIds.length} 张参考图，并自动勾选`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "参考图上传失败");
+      await refreshProject();
+    } finally {
+      setReferenceUploading(false);
     }
   };
 
@@ -1022,7 +1062,29 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
               </div>
 
               <div className={compactFieldClass}>
-                <Label className="text-xs text-muted-foreground">参考图</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs text-muted-foreground">参考图</Label>
+                  <>
+                    <Input
+                      ref={referenceUploadInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={uploadReferenceImages}
+                      className="hidden"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={compactActionButtonClass}
+                      onClick={() => referenceUploadInputRef.current?.click()}
+                      disabled={referenceUploading || selectedSectionIsGenerating || Boolean(runningPageAction)}
+                    >
+                      {referenceUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                      {referenceUploading ? "上传中..." : "添加参考图"}
+                    </Button>
+                  </>
+                </div>
                 {referenceAssets.length === 0 ? (
                   <p className="text-xs text-muted-foreground">当前没有可选参考图</p>
                 ) : (
