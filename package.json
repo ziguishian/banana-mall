@@ -11,6 +11,7 @@
     "start": "node ./scripts/run-next-safe.cjs start",
     "desktop:start": "node ./scripts/build-desktop.cjs start",
     "build:desktop": "node ./scripts/build-desktop.cjs prepare",
+    "dist:mac": "npm run build:desktop && electron-builder --mac dmg zip --arm64",
     "dist:win": "npm run build:desktop && .\\node_modules\\.bin\\electron-builder.cmd --win nsis",
     "dist:green": "npm run build:desktop && .\\node_modules\\.bin\\electron-builder.cmd --win dir zip",
     "dist:all-win": "npm run build:desktop && .\\node_modules\\.bin\\electron-builder.cmd --win nsis dir zip",
