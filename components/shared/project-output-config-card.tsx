@@ -33,8 +33,8 @@ function normalizePreviewConfig(snapshot: unknown): PreviewConfig {
   const previewConfig = (data.previewConfig as Record<string, unknown> | null) ?? {};
 
   return {
-    heroImageCount: Math.min(5, Math.max(3, Number(previewConfig.heroImageCount ?? 4))),
-    detailSectionCount: Math.min(10, Math.max(4, Number(previewConfig.detailSectionCount ?? 6))),
+    heroImageCount: Math.min(5, Math.max(1, Number(previewConfig.heroImageCount ?? 4))),
+    detailSectionCount: Math.min(10, Math.max(1, Number(previewConfig.detailSectionCount ?? 6))),
     imageAspectRatio: previewConfig.imageAspectRatio === "3:4" ? "3:4" : "9:16",
     contentLanguage: normalizeContentLanguage(previewConfig.contentLanguage),
   };
@@ -94,15 +94,12 @@ export function ProjectOutputConfigCard({
   const saveConfig = async () => {
     try {
       setSaving(true);
-      const snapshot = ((project.modelSnapshot as Record<string, unknown> | null) ?? {}) as Record<string, unknown>;
       const response = await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           modelSnapshot: {
-            ...snapshot,
             previewConfig: {
-              ...((snapshot.previewConfig as Record<string, unknown> | null) ?? {}),
               heroImageCount: formState.heroImageCount,
               detailSectionCount: formState.detailSectionCount,
               imageAspectRatio: formState.imageAspectRatio,
@@ -173,11 +170,11 @@ export function ProjectOutputConfigCard({
               onChange={(event) =>
                 setFormState((current) => ({
                   ...current,
-                  heroImageCount: Math.min(5, Math.max(3, Number(event.target.value))),
+                  heroImageCount: Math.min(5, Math.max(1, Number(event.target.value))),
                 }))
               }
             >
-              {[3, 4, 5].map((count) => (
+              {[1, 2, 3, 4, 5].map((count) => (
                 <option key={count} value={count}>
                   {count} 张
                 </option>
@@ -192,11 +189,11 @@ export function ProjectOutputConfigCard({
               onChange={(event) =>
                 setFormState((current) => ({
                   ...current,
-                  detailSectionCount: Math.min(10, Math.max(4, Number(event.target.value))),
+                  detailSectionCount: Math.min(10, Math.max(1, Number(event.target.value))),
                 }))
               }
             >
-              {[4, 5, 6, 7, 8, 9, 10].map((count) => (
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((count) => (
                 <option key={count} value={count}>
                   {count} 张
                 </option>

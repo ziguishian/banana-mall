@@ -415,6 +415,43 @@ export async function activateProviderConfig(providerId: string) {
   return getAllProviderConfigs();
 }
 
+export async function deleteProviderConfig(providerId: string) {
+  const provider = await prisma.providerConfig.findUnique({
+    where: { id: providerId },
+  });
+
+  if (!provider) {
+    throw new Error("未找到要删除的历史服务配置。");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.providerConfig.delete({
+      where: { id: providerId },
+    });
+
+    if (!provider.isActive) {
+      return;
+    }
+
+    const fallbackProvider = await tx.providerConfig.findFirst({
+      orderBy: { updatedAt: "desc" },
+    });
+
+    await tx.providerConfig.updateMany({
+      data: { isActive: false },
+    });
+
+    if (fallbackProvider) {
+      await tx.providerConfig.update({
+        where: { id: fallbackProvider.id },
+        data: { isActive: true },
+      });
+    }
+  });
+
+  return getAllProviderConfigs();
+}
+
 export async function getProviderAdapter(providerId?: string): Promise<ProviderAdapterContext> {
   const provider =
     (providerId

@@ -41,15 +41,27 @@ const additionalInformationTemplate = [
   "不可出现的物理现象：例如线缆插入桌面、风向反吹、抽屉/开口方向错误、悬浮、阴影断裂。",
 ].join("\n");
 
+const generationRequirementsTemplate = [
+  "多角度：至少覆盖正面、45° 斜侧、俯视 / 侧面、细节特写，不要重复同一种构图。",
+  "多使用场景：覆盖日常使用、收纳 / 携带、礼品 / 展示、真实操作过程等不同场景。",
+  "不同使用方式：展示手持、摆放、搭配道具、步骤拆解或功能对比等方式。",
+  "每张图要有明确差异：镜头、场景、道具、卖点、图内文案和 CTA 位置都应变化。",
+  "商品主体必须保持一致：材质、颜色、比例、结构方向和关键识别点不能改变。",
+].join("\n");
+
 function withDefaultAdditionalInformation(value: any) {
   if (!value) return value;
-  if (typeof value.additionalInformation === "string" && value.additionalInformation.trim()) {
-    return value;
-  }
 
   return {
     ...value,
-    additionalInformation: additionalInformationTemplate,
+    additionalInformation:
+      typeof value.additionalInformation === "string" && value.additionalInformation.trim()
+        ? value.additionalInformation
+        : additionalInformationTemplate,
+    generationRequirements:
+      typeof value.generationRequirements === "string" && value.generationRequirements.trim()
+        ? value.generationRequirements
+        : generationRequirementsTemplate,
   };
 }
 
@@ -340,6 +352,9 @@ export function AnalysisWorkspace({
               {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
               重新运行 AI 商品分析
             </Button>
+            <p className="text-center text-xs text-muted-foreground">
+              商品分析图最多取前 10 张，请合理规划分析图。
+            </p>
           </CardContent>
         </Card>
 
@@ -415,6 +430,28 @@ export function AnalysisWorkspace({
                     value={(analysis as any).additionalInformation ?? additionalInformationTemplate}
                     onChange={(event) => updateField("additionalInformation", event.target.value)}
                     placeholder={additionalInformationTemplate}
+                  />
+                </div>
+                <div className="space-y-2 rounded-3xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-500/20 dark:bg-sky-500/10">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Label>生图补充要求</Label>
+                        <Badge variant="outline">影响规划与生成</Badge>
+                      </div>
+                      <p className="text-xs leading-6 text-sky-800/80 dark:text-sky-200/80">
+                        用来约束后续页面规划和实际图片生成，例如多角度、多使用场景、不同使用方式、构图差异和不可改变的商品特征。
+                      </p>
+                    </div>
+                    <Button type="button" variant="outline" size="sm" onClick={() => updateField("generationRequirements", generationRequirementsTemplate)}>
+                      使用多场景模板
+                    </Button>
+                  </div>
+                  <Textarea
+                    rows={7}
+                    value={(analysis as any).generationRequirements ?? generationRequirementsTemplate}
+                    onChange={(event) => updateField("generationRequirements", event.target.value)}
+                    placeholder={generationRequirementsTemplate}
                   />
                 </div>
                 <div className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.04] sm:flex-row sm:items-center sm:justify-between">

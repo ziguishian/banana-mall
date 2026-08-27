@@ -5,8 +5,8 @@ import { assetTypeLabels, sectionTypeLabels } from "@/types/domain";
 function getPreviewConfig(project: any) {
   const config = project?.modelSnapshot?.previewConfig ?? {};
   return {
-    heroImageCount: Math.min(5, Math.max(3, Number(config.heroImageCount ?? 4))),
-    detailSectionCount: Math.min(10, Math.max(4, Number(config.detailSectionCount ?? 6))),
+    heroImageCount: Math.min(5, Math.max(1, Number(config.heroImageCount ?? 4))),
+    detailSectionCount: Math.min(10, Math.max(1, Number(config.detailSectionCount ?? 6))),
   };
 }
 

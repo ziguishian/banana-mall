@@ -256,6 +256,7 @@ LOCK_BASE_URL="https://your-private-openai-compatible-gateway/v1"
 npm run dev
 npm run build
 npm run start
+npm run dist:mac
 npm run dist:win
 npm run dist:green
 ```
@@ -265,6 +266,7 @@ npm run dist:green
 | `npm run dev`        | 启动开发环境         |
 | `npm run build`      | 构建生产版本         |
 | `npm run start`      | 启动生产服务         |
+| `npm run dist:mac`   | 打包 macOS ARM64 桌面端（DMG、ZIP） |
 | `npm run dist:win`   | 打包 Windows 桌面端 |
 | `npm run dist:green` | 打包绿色版桌面端       |
 
@@ -274,7 +276,7 @@ npm run dist:green
 
 MxPage 的 Electron 桌面端复用同一套 Next.js 应用。
 
-桌面端运行数据会存储在系统应用数据目录中，Windows 打包通过 `electron-builder` 配置。
+桌面端运行数据会存储在系统应用数据目录中，macOS 与 Windows 打包均通过 `electron-builder` 配置。
 
 ---
 

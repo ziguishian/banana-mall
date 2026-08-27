@@ -58,11 +58,25 @@ function buildPhysicalRealityInstruction() {
   ].join(" ");
 }
 
+function buildGenerationRequirementsInstruction(generationRequirements?: string | null) {
+  const trimmed = generationRequirements?.trim();
+  if (!trimmed) {
+    return "No extra project-level image generation requirements were provided.";
+  }
+
+  return [
+    "Project-level image generation requirements from the user. Treat these as high-priority creative constraints for this image while still following the current section goal:",
+    trimmed,
+    "Operationalize these requirements concretely through camera angle, scene, props, product interaction, composition variation, and in-image copy. Do not ignore them or mention them only as abstract text.",
+  ].join("\n");
+}
+
 export function buildSectionImagePrompt(
   section: PageSection,
   referenceAssets: ProductAsset[] = [],
   aspectRatio: "1:1" | "3:4" | "9:16" = "9:16",
   contentLanguage: ContentLanguage = "zh-CN",
+  generationRequirements?: string | null,
 ) {
   return [
     "You are a senior e-commerce key-visual designer creating marketplace-ready product artwork.",
@@ -75,6 +89,7 @@ export function buildSectionImagePrompt(
     buildMainImageInstruction(referenceAssets),
     buildAspectInstruction(aspectRatio),
     buildTargetLanguageInstruction(contentLanguage),
+    buildGenerationRequirementsInstruction(generationRequirements),
     buildPhysicalRealityInstruction(),
     "Generate one high-conversion mobile e-commerce visual for this section.",
     "The image should emphasize product clarity, composition hierarchy, material texture, and marketplace aesthetics.",
@@ -88,9 +103,10 @@ export function buildRegenerationPrompt(
   referenceAssets: ProductAsset[] = [],
   aspectRatio: "1:1" | "3:4" | "9:16" = "9:16",
   contentLanguage: ContentLanguage = "zh-CN",
+  generationRequirements?: string | null,
 ) {
   return [
-    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage),
+    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements),
     "This is a regeneration task. Keep the same product identity and selling-point direction, but improve composition accuracy, completion quality, and conversion appeal.",
   ].join("\n");
 }
@@ -101,6 +117,7 @@ export function buildImageEditPrompt(
   mode: "repaint" | "enhance" | "translate" = "repaint",
   aspectRatio: "1:1" | "3:4" | "9:16" = "9:16",
   contentLanguage: ContentLanguage = "zh-CN",
+  generationRequirements?: string | null,
 ) {
   const targetLanguage = contentLanguageNamesForPrompt[normalizeContentLanguage(contentLanguage)];
   const modeInstruction =
@@ -111,7 +128,7 @@ export function buildImageEditPrompt(
         : "This is a repaint task. Use the current image as the base, keep the same product identity, and redesign the composition, atmosphere, styling, and conversion emphasis according to the section goal.";
 
   return [
-    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage),
+    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements),
     modeInstruction,
     "The current section image must be treated as the editable base image.",
     "Keep the product identical to the uploaded main product image and do not replace it with a different item.",

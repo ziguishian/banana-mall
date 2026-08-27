@@ -2,24 +2,28 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
   ImagePlus,
+  Images,
   Info,
   LayoutTemplate,
   Loader2,
   Plus,
   Save,
   Sparkles,
+  Square,
   Trash2,
+  ZoomIn,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { NoticeCard } from "@/components/shared/notice-card";
 import { ProjectOutputConfigCard } from "@/components/shared/project-output-config-card";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { useImagePreview, type ImagePreviewPayload } from "@/components/shared/image-preview-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,14 +53,92 @@ interface BulkProgressState {
   total: number;
   completed: number;
   failed: number;
+  canceled: number;
   fallbackCount: number;
   currentTitle: string | null;
+  currentSectionId: string | null;
+  mode: "all" | "missing";
   running: boolean;
 }
 
 interface PlanningProgressState {
   stage: "idle" | "requesting" | "parsing" | "saving";
   detail: string;
+}
+
+interface PlanningTask {
+  id: string;
+  taskType: string;
+  status: string;
+  sectionId?: string | null;
+  startedAt?: string | Date | null;
+  createdAt?: string | Date | null;
+  errorMessage?: string | null;
+  outputPayload?: {
+    totalItems?: number;
+    completedItems?: number;
+    failedItems?: number;
+    canceledItems?: number;
+    fallbackCount?: number;
+    currentTitle?: string | null;
+    currentSectionId?: string | null;
+    currentTaskId?: string | null;
+    mode?: "all" | "missing";
+  } | null;
+}
+
+const activePlanningTaskMaxAgeMs = 10 * 60 * 1000;
+const activeBulkGenerationTaskMaxAgeMs = 12 * 60 * 60 * 1000;
+
+function getActivePlanningTask(project: any): PlanningTask | null {
+  const tasks = Array.isArray(project?.tasks) ? project.tasks : [];
+  const startedAfter = Date.now() - activePlanningTaskMaxAgeMs;
+
+  return (
+    tasks.find((task: PlanningTask) => {
+      if (task.taskType !== "PLAN" || task.status !== "RUNNING" || !task.startedAt) {
+        return false;
+      }
+
+      const startedAt = new Date(task.startedAt).getTime();
+      return Number.isFinite(startedAt) && startedAt >= startedAfter;
+    }) ?? null
+  );
+}
+
+function getActiveBulkGenerationTask(project: any): PlanningTask | null {
+  const tasks = Array.isArray(project?.tasks) ? project.tasks : [];
+  const startedAfter = Date.now() - activeBulkGenerationTaskMaxAgeMs;
+
+  return (
+    tasks.find((task: PlanningTask) => {
+      if (
+        task.taskType !== "GENERATE" ||
+        task.sectionId != null ||
+        (task.status !== "PENDING" && task.status !== "RUNNING")
+      ) {
+        return false;
+      }
+
+      const taskTime = new Date(task.startedAt ?? task.createdAt ?? 0).getTime();
+      return Number.isFinite(taskTime) && taskTime >= startedAfter;
+    }) ?? null
+  );
+}
+
+function getBulkProgressFromTask(task: PlanningTask, fallbackTotal: number, running: boolean): BulkProgressState {
+  const output = task.outputPayload ?? {};
+  return {
+    total: Number(output.totalItems ?? fallbackTotal),
+    completed: Number(output.completedItems ?? 0),
+    failed: Number(output.failedItems ?? 0),
+    canceled: Number(output.canceledItems ?? 0),
+    fallbackCount: Number(output.fallbackCount ?? 0),
+    currentTitle: output.currentTitle ?? null,
+    currentSectionId: output.currentSectionId ?? null,
+    mode: output.mode === "missing" ? "missing" : "all",
+    running,
+  };
 }
 
 const defaultPreviewConfig: PreviewConfig = {
@@ -94,10 +176,10 @@ const shellItems = [
 function getPreviewConfig(project: any): PreviewConfig {
   const config = project?.modelSnapshot?.previewConfig ?? {};
   return {
-    heroImageCount: Math.min(5, Math.max(3, Number(config.heroImageCount ?? defaultPreviewConfig.heroImageCount))),
+    heroImageCount: Math.min(5, Math.max(1, Number(config.heroImageCount ?? defaultPreviewConfig.heroImageCount))),
     detailSectionCount: Math.min(
       10,
-      Math.max(4, Number(config.detailSectionCount ?? defaultPreviewConfig.detailSectionCount)),
+      Math.max(1, Number(config.detailSectionCount ?? defaultPreviewConfig.detailSectionCount)),
     ),
     imageAspectRatio: config.imageAspectRatio === "3:4" ? "3:4" : defaultPreviewConfig.imageAspectRatio,
     contentLanguage: config.contentLanguage ?? defaultPreviewConfig.contentLanguage,
@@ -123,18 +205,28 @@ function getVisualStyleGuide(project: any): VisualStyleGuide {
   return normalizeVisualStyleGuide(project?.modelSnapshot?.visualStyleGuide, fallback);
 }
 
+function getGenerationRequirements(project: any) {
+  const value = project?.analysis?.normalizedResult?.generationRequirements;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function hasSectionsSyncedGenerationRequirements(sections: any[], generationRequirements: string) {
+  if (!generationRequirements) return true;
+  if (!sections.length) return false;
+
+  const requirementMarkers = ["生图补充要求", ...generationRequirements.split(/\s+/).filter((item) => item.length >= 4).slice(0, 3)];
+  const combinedPrompt = sections.map((section) => section.visualPrompt ?? "").join("\n");
+  return requirementMarkers.some((marker) => combinedPrompt.includes(marker));
+}
+
 function progressPercent(progress: BulkProgressState | null) {
   if (!progress || progress.total === 0) {
     return 0;
   }
 
-  return Math.min(100, Math.round(((progress.completed + progress.failed) / progress.total) * 100));
-}
-
-function isProviderWideImageFailure(message: string) {
-  return (
-    message.includes("\u5f53\u524d Provider \u6ca1\u6709\u53ef\u7528\u7684\u771f\u5b9e\u56fe\u7247\u751f\u6210\u7aef\u70b9") ||
-    message.includes("\u5f53\u524d Provider \u6ca1\u6709\u8bc6\u522b\u5230\u53ef\u7528\u4e8e\u771f\u5b9e\u56fe\u7247\u751f\u6210\u7684\u6a21\u578b")
+  return Math.min(
+    100,
+    Math.round(((progress.completed + progress.failed + progress.canceled) / progress.total) * 100),
   );
 }
 
@@ -145,23 +237,108 @@ function getGenerationLabel(section: any) {
   return "尚未生成";
 }
 
+function getPlannerPreviewAspectClass(aspectRatio: "1:1" | "3:4" | "9:16") {
+  if (aspectRatio === "1:1") return "aspect-square";
+  if (aspectRatio === "3:4") return "aspect-[3/4]";
+  return "aspect-[9/16]";
+}
+
+function hasCompletedPreview(section: any) {
+  return section.status === "SUCCESS";
+}
+
+function getPlannerCardContentClass(section: any) {
+  const completedLayout = hasCompletedPreview(section)
+    ? "lg:grid lg:grid-cols-[200px_minmax(0,1fr)] lg:items-start lg:gap-4 lg:space-y-0 xl:grid-cols-[236px_minmax(0,1fr)]"
+    : "";
+
+  return `space-y-3 p-4 pt-0 ${completedLayout}`;
+}
+
+function CompletedSectionPreview({
+  section,
+  aspectRatio,
+  onPreview,
+}: {
+  section: any;
+  aspectRatio: "1:1" | "3:4" | "9:16";
+  onPreview: (image: ImagePreviewPayload) => void;
+}) {
+  if (section.status !== "SUCCESS") {
+    return null;
+  }
+
+  if (!section.imageUrl) {
+    return (
+      <NoticeCard
+        variant="warning"
+        title="已完成但暂未找到图片"
+        description="当前模块状态为已完成，但项目详情里没有返回图片地址。可以点击重生成，或进入编辑台查看版本记录。"
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-slate-100 shadow-sm dark:bg-white/[0.04] lg:sticky lg:top-3">
+      <button
+        type="button"
+        className={`group relative mx-auto block max-h-[300px] w-full cursor-zoom-in overflow-hidden text-left ${getPlannerPreviewAspectClass(aspectRatio)}`}
+        onClick={() =>
+          onPreview({
+            url: section.imageUrl,
+            title: section.title,
+            meta: `${aspectRatio} ${section.type === "HERO" ? "头图" : "详情页"}`,
+          })
+        }
+        aria-label={`放大查看 ${section.title}`}
+      >
+        <img src={section.imageUrl} alt={section.title} className="h-full w-full object-contain" />
+        <div className="pointer-events-none absolute left-2 top-2 flex flex-wrap gap-1.5">
+          <StatusBadge value={section.status} />
+          <Badge variant={getGenerationLabel(section) === "AI 真图" ? "success" : "outline"}>
+            {getGenerationLabel(section)}
+          </Badge>
+        </div>
+        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          <ZoomIn className="h-4 w-4" />
+        </div>
+      </button>
+    </div>
+  );
+}
+
 export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
   const router = useRouter();
+  const { openImagePreview } = useImagePreview();
+  const initialPlanningTask = getActivePlanningTask(project);
+  const initialBulkGenerationTask = getActiveBulkGenerationTask(project);
   const [projectState, setProjectState] = useState(project);
   const [sections, setSections] = useState(project.sections ?? []);
-  const [planning, setPlanning] = useState(false);
-  const [bulkGenerating, setBulkGenerating] = useState(false);
+  const [planning, setPlanning] = useState(Boolean(initialPlanningTask));
+  const [planningTaskId, setPlanningTaskId] = useState<string | null>(initialPlanningTask?.id ?? null);
+  const [cancelingPlanning, setCancelingPlanning] = useState(false);
+  const [bulkGenerating, setBulkGenerating] = useState(Boolean(initialBulkGenerationTask));
+  const [bulkTaskId, setBulkTaskId] = useState<string | null>(initialBulkGenerationTask?.id ?? null);
+  const [cancelingSectionId, setCancelingSectionId] = useState<string | null>(null);
+  const [cancelingBulk, setCancelingBulk] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [regeneratingVisualStyleGuide, setRegeneratingVisualStyleGuide] = useState(false);
   const [previewConfig, setPreviewConfig] = useState<PreviewConfig>(getPreviewConfig(project));
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(getGenerationSettings(project));
   const [visualStyleGuide, setVisualStyleGuide] = useState<VisualStyleGuide>(getVisualStyleGuide(project));
-  const [bulkProgress, setBulkProgress] = useState<BulkProgressState | null>(null);
+  const [bulkProgress, setBulkProgress] = useState<BulkProgressState | null>(
+    initialBulkGenerationTask
+      ? getBulkProgressFromTask(initialBulkGenerationTask, project.sections?.length ?? 0, true)
+      : null,
+  );
   const [runningSectionId, setRunningSectionId] = useState<string | null>(null);
   const [planningProgress, setPlanningProgress] = useState<PlanningProgressState>({
-    stage: "idle",
-    detail: "",
+    stage: initialPlanningTask ? "requesting" : "idle",
+    detail: initialPlanningTask
+      ? "检测到刷新前发起的规划任务，AI 正在继续生成头图与详情页结构…"
+      : "",
   });
+  const generationRequirements = useMemo(() => getGenerationRequirements(projectState), [projectState]);
 
   const heroSections = useMemo(
     () => sections.filter((section: any) => section.type === "HERO"),
@@ -175,11 +352,19 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
     () => sections.filter((section: any) => section.status === "SUCCESS").length,
     [sections],
   );
+  const ungeneratedSections = useMemo(
+    () => sections.filter((section: any) => !section.currentImageAssetId && !section.imageUrl),
+    [sections],
+  );
 
   const hasPlannedSections = sections.length > 0;
   const structureMatchesConfig =
     heroSections.length === previewConfig.heroImageCount &&
     detailSections.length === previewConfig.detailSectionCount;
+  const planningSyncedGenerationRequirements = useMemo(
+    () => hasSectionsSyncedGenerationRequirements(sections, generationRequirements),
+    [generationRequirements, sections],
+  );
 
   const refreshProject = async () => {
     const response = await fetch(`/api/projects/${project.id}`);
@@ -193,22 +378,170 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
     }
   };
 
+  useEffect(() => {
+    if (!planningTaskId) {
+      return;
+    }
+
+    let disposed = false;
+    let settled = false;
+
+    const pollPlanningTask = async () => {
+      if (settled) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/tasks/${planningTaskId}`, { cache: "no-store" });
+        const payload = await response.json();
+        const task = payload.success ? (payload.data as PlanningTask | null) : null;
+        const taskStartedAt = task?.startedAt ? new Date(task.startedAt).getTime() : Number.NaN;
+        const taskIsActive =
+          task &&
+          (task.status === "RUNNING" || task.status === "PENDING") &&
+          Number.isFinite(taskStartedAt) &&
+          taskStartedAt >= Date.now() - activePlanningTaskMaxAgeMs;
+
+        if (disposed || !task || taskIsActive) {
+          return;
+        }
+
+        settled = true;
+        await refreshProject();
+        if (disposed) {
+          return;
+        }
+
+        setPlanning(false);
+        setPlanningTaskId(null);
+        setPlanningProgress({ stage: "idle", detail: "" });
+
+        if (task.status === "SUCCESS") {
+          toast.success("AI 已完成头图与详情页规划");
+        } else if (task.status === "CANCELED") {
+          toast.message("已停止 AI 自动规划");
+        } else {
+          toast.error(
+            task.status === "RUNNING" || task.status === "PENDING"
+              ? "页面自动规划已超时，可以重新发起规划"
+              : task.errorMessage || "页面自动规划失败，请重试",
+          );
+        }
+      } catch {
+        // A transient polling failure should not hide a planning task that is still running.
+      }
+    };
+
+    void pollPlanningTask();
+    const timer = window.setInterval(pollPlanningTask, 2000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [planningTaskId]);
+
+  useEffect(() => {
+    if (!bulkTaskId) {
+      return;
+    }
+
+    let disposed = false;
+    let settled = false;
+    let lastProjectSyncSignature = "";
+
+    const pollBulkGenerationTask = async () => {
+      if (settled) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/tasks/${bulkTaskId}`, { cache: "no-store" });
+        const payload = await response.json();
+        const task = payload.success ? (payload.data as PlanningTask | null) : null;
+        if (disposed || !task) {
+          return;
+        }
+
+        const taskTime = new Date(task.startedAt ?? task.createdAt ?? 0).getTime();
+        const taskIsActive =
+          (task.status === "RUNNING" || task.status === "PENDING") &&
+          Number.isFinite(taskTime) &&
+          taskTime >= Date.now() - activeBulkGenerationTaskMaxAgeMs;
+        setBulkProgress(getBulkProgressFromTask(task, sections.length, taskIsActive));
+
+        const output = task.outputPayload ?? {};
+        const projectSyncSignature = [
+          output.currentSectionId ?? "",
+          output.completedItems ?? 0,
+          output.failedItems ?? 0,
+          output.canceledItems ?? 0,
+        ].join(":");
+        if (taskIsActive && projectSyncSignature !== lastProjectSyncSignature) {
+          lastProjectSyncSignature = projectSyncSignature;
+          await refreshProject();
+          if (disposed) {
+            return;
+          }
+        }
+
+        if (taskIsActive) {
+          return;
+        }
+
+        settled = true;
+        await refreshProject();
+        if (disposed) {
+          return;
+        }
+
+        setBulkGenerating(false);
+        setBulkTaskId(null);
+        const failedItems = Number(task.outputPayload?.failedItems ?? 0);
+        const canceledItems = Number(task.outputPayload?.canceledItems ?? 0);
+
+        if (task.status === "SUCCESS" && failedItems === 0 && canceledItems === 0) {
+          toast.success("本轮头图与详情页已完成生成，正在进入预览与编辑");
+          router.push(`/projects/${project.id}/editor`);
+          router.refresh();
+        } else if (task.status === "SUCCESS") {
+          toast.warning(
+            `批量生成已结束：${failedItems} 个失败，${canceledItems} 个已跳过，请检查后按需重试`,
+          );
+        } else if (task.status === "CANCELED") {
+          toast.message("已终止全部模块图生成");
+        } else if (task.status === "RUNNING" || task.status === "PENDING") {
+          toast.error("批量生成任务已超时，可以重新发起生成");
+        } else {
+          toast.error(task.errorMessage || "批量生成失败，请重试");
+        }
+      } catch {
+        // Keep the persisted running state visible while a polling request is temporarily unavailable.
+      }
+    };
+
+    void pollBulkGenerationTask();
+    const timer = window.setInterval(pollBulkGenerationTask, 2000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [bulkTaskId]);
+
   const saveGenerationSettings = async (options?: { silent?: boolean; generationSettings?: GenerationSettings }) => {
     setSavingConfig(true);
 
     try {
       const nextGenerationSettings = options?.generationSettings ?? generationSettings;
-      const mergedSnapshot = {
-        ...(projectState.modelSnapshot ?? {}),
-        previewConfig,
-        generationSettings: nextGenerationSettings,
-      };
-
       const response = await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          modelSnapshot: mergedSnapshot,
+          modelSnapshot: {
+            previewConfig,
+            generationSettings: nextGenerationSettings,
+          },
         }),
       });
 
@@ -261,6 +594,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
     }
   };
   const autoPlan = async () => {
+    setPlanningTaskId(null);
     setPlanning(true);
     setPlanningProgress({
       stage: "requesting",
@@ -312,17 +646,40 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "页面自动规划失败";
-      toast.error(
-        /"sections"|expected array|received undefined/i.test(message)
-          ? "AI 规划结果格式不完整，请重试；如果仍失败，系统会自动切换为模板规划。"
-          : message,
-      );
+      if (!/task canceled|canceled by user/i.test(message)) {
+        toast.error(
+          /"sections"|expected array|received undefined/i.test(message)
+            ? "AI 规划结果格式不完整，请重试；如果仍失败，系统会自动切换为模板规划。"
+            : message,
+        );
+      }
     } finally {
       setPlanning(false);
       setPlanningProgress({
         stage: "idle",
         detail: "",
       });
+    }
+  };
+
+  const cancelPlanning = async () => {
+    setCancelingPlanning(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/cancel-planning`, { method: "POST" });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error?.message ?? "停止 AI 自动规划失败");
+      }
+
+      setPlanning(false);
+      setPlanningTaskId(null);
+      setPlanningProgress({ stage: "idle", detail: "" });
+      await refreshProject();
+      toast.message(payload.data?.canceled ? "已停止 AI 自动规划" : "规划任务已经结束");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "停止 AI 自动规划失败");
+    } finally {
+      setCancelingPlanning(false);
     }
   };
 
@@ -439,6 +796,9 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
 
   const runSingleGeneration = async (section: any) => {
     setRunningSectionId(section.id);
+    setSections((current: any[]) =>
+      current.map((entry) => (entry.id === section.id ? { ...entry, status: "GENERATING" } : entry)),
+    );
     try {
       const endpoint = section.imageUrl ? "regenerate" : "generate";
       const response = await fetch(`/api/projects/${project.id}/sections/${section.id}/${endpoint}`, {
@@ -453,21 +813,66 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
       await refreshProject();
       toast.success(`${section.type === "HERO" ? "头图" : "详情页"}已生成并自动保存`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "模块生成失败");
+      if (!(error instanceof Error) || !/task canceled/i.test(error.message)) {
+        toast.error(error instanceof Error ? error.message : "模块生成失败");
+      }
     } finally {
       setRunningSectionId(null);
+      await refreshProject();
     }
   };
 
-  const generateAllSections = async () => {
+  const cancelSectionGeneration = async (section: any) => {
+    setCancelingSectionId(section.id);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/sections/${section.id}/cancel-generation`, {
+        method: "POST",
+      });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error?.message ?? "终止当前模块图失败");
+      }
+
+      setSections((current: any[]) =>
+        current.map((entry) =>
+          entry.id === section.id
+            ? { ...entry, status: entry.imageUrl ? "SUCCESS" : "IDLE" }
+            : entry,
+        ),
+      );
+      toast.message(bulkGenerating ? "已终止当前模块图，将继续生成下一张" : "已终止当前模块图生成");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "终止当前模块图失败");
+    } finally {
+      setCancelingSectionId(null);
+    }
+  };
+
+  const cancelAllGeneration = async () => {
+    if (!bulkTaskId) return;
+    setCancelingBulk(true);
+    try {
+      const response = await fetch(`/api/tasks/${bulkTaskId}/cancel`, { method: "POST" });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error?.message ?? "终止全部生成失败");
+      }
+      toast.message("正在终止全部模块图生成…");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "终止全部生成失败");
+    } finally {
+      setCancelingBulk(false);
+    }
+  };
+
+  const generateAllSections = async (mode: "all" | "missing") => {
     if (!sections.length) {
       toast.error("请先完成页面规划，再开始批量生成");
       return;
     }
-
-    const generationQueue = [...heroSections, ...detailSections];
-    if (!generationQueue.length) {
-      toast.error("当前没有可生成的模块，请先完成页面规划");
+    const generationQueue = mode === "missing" ? ungeneratedSections : sections;
+    if (generationQueue.length === 0) {
+      toast.message("当前规划没有未生成的模块图");
       return;
     }
 
@@ -476,88 +881,42 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
       total: generationQueue.length,
       completed: 0,
       failed: 0,
+      canceled: 0,
       fallbackCount: 0,
       currentTitle: generationQueue[0]?.title ?? null,
+      currentSectionId: generationQueue[0]?.id ?? null,
+      mode,
       running: true,
     });
 
     try {
-      for (let sectionIndex = 0; sectionIndex < generationQueue.length; sectionIndex += 1) {
-        const section = generationQueue[sectionIndex];
-        setBulkProgress((current) =>
-          current
-            ? {
-                ...current,
-                currentTitle: section.title,
-              }
-            : current,
-        );
-
-        const response = await fetch(
-          `/api/projects/${project.id}/sections/${section.id}/${section.imageUrl ? "regenerate" : "generate"}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          },
-        );
-
-        const payload = await response.json();
-        if (!payload.success) {
-          const message = payload.error?.message ?? "模块生成失败";
-          setSections((current: any[]) =>
-            current.map((entry) => (entry.id === section.id ? { ...entry, status: "FAILED" } : entry)),
-          );
-          setBulkProgress((current) =>
-            current
-              ? {
-                  ...current,
-                  failed: current.failed + 1,
-                  running: false,
-                }
-              : current,
-          );
-
-          if (isProviderWideImageFailure(message)) {
-            toast.error(`\u5df2\u5728\u7b2c ${sectionIndex + 1}/${generationQueue.length} \u4e2a\u6a21\u5757\u5904\u505c\u6b62\u6279\u91cf\u751f\u6210\uff1a${message}`);
-            return;
-          }
-
-          toast.error(`\u7b2c ${sectionIndex + 1}/${generationQueue.length} \u4e2a\u6a21\u5757\u751f\u6210\u5931\u8d25\uff1a${message}`);
-          continue;
-        }
-
-        const generationMode = payload.data?.generationMode ?? "image_api";
-        await refreshProject();
-        setBulkProgress((current) =>
-          current
-            ? {
-                ...current,
-                completed: current.completed + 1,
-                fallbackCount: current.fallbackCount + (generationMode === "svg_fallback" ? 1 : 0),
-              }
-            : current,
-        );
+      const response = await fetch(`/api/projects/${project.id}/generate-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      const payload = await response.json();
+      if (!payload.success || !payload.data?.id) {
+        throw new Error(payload.error?.message ?? "批量生成任务启动失败");
       }
 
-      setBulkProgress((current) =>
-        current
-          ? {
-              ...current,
-              running: false,
-            }
-          : current,
-      );
-
-      toast.success("本轮头图与详情页已完成生成，正在进入预览与编辑");
-      router.push(`/projects/${project.id}/editor`);
-      router.refresh();
-    } finally {
+      const task = payload.data as PlanningTask;
+      setBulkTaskId(task.id);
+      setBulkProgress(getBulkProgressFromTask(task, generationQueue.length, true));
+    } catch (error) {
       setBulkGenerating(false);
+      setBulkProgress((current) => (current ? { ...current, running: false } : current));
+      toast.error(error instanceof Error ? error.message : "批量生成任务启动失败");
     }
   };
 
   const bulkPercent = progressPercent(bulkProgress);
+  const isSectionGenerating = (section: any) =>
+    section.status === "GENERATING" ||
+    runningSectionId === section.id ||
+    (bulkGenerating && bulkProgress?.currentSectionId === section.id);
+  const getSectionDisplayStatus = (section: any) =>
+    isSectionGenerating(section) ? "GENERATING" : section.status;
 
   return (
     <div className="space-y-6">
@@ -656,6 +1015,13 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     </div>
                     </>
                   ) : null}
+                  {generationRequirements && !planningSyncedGenerationRequirements ? (
+                    <NoticeCard
+                      variant="warning"
+                      title="生图补充要求尚未同步到当前规划"
+                      description="分析页已保存多角度、多场景等生图要求，但当前模块规划仍是旧版本。请点击下方 AI 自动规划，让系统重新拆分头图和详情页后再生成图片。"
+                    />
+                  ) : null}
                   <Link
                     href={`/projects/${project.id}/analysis`}
                     className="inline-flex h-10 items-center justify-center rounded-xl border border-border bg-white px-4 text-sm font-medium text-slate-700 transition-colors hover:bg-muted hover:text-slate-900 dark:border-white/10 dark:bg-[#141416] dark:text-slate-100 dark:hover:border-white/20 dark:hover:bg-white/8 dark:hover:text-white"
@@ -699,14 +1065,30 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     AI 会直接输出独立的头图规划项和详情页规划项，头图永远排在前面，页面壳层不进入可规划模块。你手动新增、删除或改类型后，数量会自动回写并与分析页配置保持同步。
                   </p>
                 </div>
-                <Button
-                  onClick={autoPlan}
-                  disabled={planning || bulkGenerating}
-                  className="h-10 shrink-0 whitespace-nowrap px-5 text-sm md:min-w-[240px]"
-                >
-                  <Sparkles className="mr-2 h-4 w-4" />
-                  {planning ? "AI 正在规划头图与详情页…" : hasPlannedSections ? "重新规划头图与详情页" : "AI 自动规划"}
-                </Button>
+                {planning ? (
+                  <Button
+                    variant="destructive"
+                    onClick={cancelPlanning}
+                    disabled={cancelingPlanning}
+                    className="h-10 shrink-0 whitespace-nowrap px-5 text-sm md:min-w-[240px]"
+                  >
+                    {cancelingPlanning ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Square className="mr-2 h-4 w-4" />
+                    )}
+                    {cancelingPlanning ? "正在停止规划…" : "停止 AI 自动规划"}
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={autoPlan}
+                    disabled={bulkGenerating}
+                    className="h-10 shrink-0 whitespace-nowrap px-5 text-sm md:min-w-[240px]"
+                  >
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    {hasPlannedSections ? "重新规划头图与详情页" : "AI 自动规划"}
+                  </Button>
+                )}
               </div>
 
               {planning ? (
@@ -753,6 +1135,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                 <div className="grid grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400">
                   <p>成功：{bulkProgress.completed}</p>
                   <p>失败：{bulkProgress.failed}</p>
+                  <p>已跳过：{bulkProgress.canceled}</p>
                   <p>SVG 兜底：{bulkProgress.fallbackCount}</p>
                   <p>总数：{bulkProgress.total}</p>
                 </div>
@@ -761,20 +1144,56 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     ? `当前正在处理：${bulkProgress.currentTitle ?? "准备中"}`
                     : bulkProgress.failed > 0
                       ? "本轮生成已结束，存在失败模块，请先查看原因再决定是否重试。"
+                      : bulkProgress.canceled > 0
+                        ? "本轮生成已结束，存在主动跳过的模块，可以单独重新生成。"
                       : "本轮生成已结束，可以进入预览与编辑继续细调。"}
                 </p>
+                {bulkProgress.running && bulkTaskId ? (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={cancelAllGeneration}
+                    disabled={cancelingBulk}
+                  >
+                    {cancelingBulk ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}
+                    {cancelingBulk ? "正在终止…" : "终止全部生成"}
+                  </Button>
+                ) : null}
               </div>
             ) : null}
 
             <div className="mt-5 flex flex-wrap gap-3">
               <Button
-                onClick={generateAllSections}
-                disabled={planning || bulkGenerating || !hasPlannedSections}
+                onClick={() => generateAllSections("missing")}
+                disabled={
+                  planning ||
+                  bulkGenerating ||
+                  runningSectionId !== null ||
+                  !hasPlannedSections ||
+                  ungeneratedSections.length === 0
+                }
+              >
+                {bulkGenerating && bulkProgress?.mode === "missing" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <ImagePlus className="mr-2 h-4 w-4" />
+                )}
+                {bulkGenerating && bulkProgress?.mode === "missing"
+                  ? "正在生成未生成模块…"
+                  : `一键生成未生成模块图${ungeneratedSections.length > 0 ? `（${ungeneratedSections.length}）` : ""}`}
+              </Button>
+              <Button
+                onClick={() => generateAllSections("all")}
+                disabled={planning || bulkGenerating || runningSectionId !== null || !hasPlannedSections}
                 variant="secondary"
                 className="dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
               >
-                {bulkGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-2 h-4 w-4" />}
-                {bulkGenerating ? "正在一键生成..." : "一键生成全部模块图"}
+                {bulkGenerating && bulkProgress?.mode === "all" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Images className="mr-2 h-4 w-4" />
+                )}
+                {bulkGenerating && bulkProgress?.mode === "all" ? "正在重新生成全部模块…" : "重新生成全部模块图"}
               </Button>
               <Link
                 href={`/projects/${project.id}/editor`}
@@ -804,15 +1223,15 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             {heroSections.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border p-5 text-sm text-muted-foreground">
                 还没有头图规划项。点击上方“AI 自动规划”后，会按分析页配置直接生成对应数量的头图规划卡片。
               </div>
             ) : (
               heroSections.map((section: any, index: number) => (
-                <Card key={section.id} className="border-border/80 shadow-sm">
-                  <CardHeader>
+                <Card key={section.id} className="rounded-2xl border-border/80 shadow-sm">
+                  <CardHeader className="p-4 pb-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <CardTitle className="text-base">头图 {index + 1}</CardTitle>
@@ -820,46 +1239,50 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge variant="outline">1:1 头图</Badge>
-                        <StatusBadge value={section.status} />
+                        <StatusBadge value={getSectionDisplayStatus(section)} />
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>模块类型</Label>
-                        <select
-                          className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
-                          value={String(section.type).toLowerCase()}
-                          onChange={(event) =>
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, type: event.target.value.toUpperCase() } : item)),
-                            )
-                          }
-                        >
-                          {plannerSectionTypeOptions.map((type) => (
-                            <option key={type} value={type}>
-                              {sectionTypeLabels[type]}
-                            </option>
-                          ))}
-                        </select>
+                  <CardContent className={getPlannerCardContentClass(section)}>
+                    <CompletedSectionPreview section={section} aspectRatio="1:1" onPreview={openImagePreview} />
+                    <div className="space-y-3">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>模块类型</Label>
+                          <select
+                            className="flex h-9 w-full rounded-lg border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
+                            value={String(section.type).toLowerCase()}
+                            onChange={(event) =>
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, type: event.target.value.toUpperCase() } : item)),
+                              )
+                            }
+                          >
+                            {plannerSectionTypeOptions.map((type) => (
+                              <option key={type} value={type}>
+                                {sectionTypeLabels[type]}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>头图标题</Label>
+                          <Input
+                            className="h-9 rounded-lg"
+                            value={section.title}
+                            onChange={(event) =>
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
+                              )
+                            }
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label>头图标题</Label>
-                        <Input
-                          value={section.title}
-                          onChange={(event) =>
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
-                            )
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+                    <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[250px_minmax(0,1fr)]">
                       <div className="space-y-2">
                         <Label>头图目标</Label>
                         <Input
+                          className="h-9 rounded-lg"
                           value={section.goal}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -871,6 +1294,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       <div className="space-y-2">
                         <Label>头图文案</Label>
                         <Textarea
+                          className="min-h-[72px] rounded-lg"
                           value={section.copy}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -883,6 +1307,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     <div className="space-y-2">
                       <Label>双语视觉 Prompt</Label>
                       <Textarea
+                        className="max-h-[140px] min-h-[84px] rounded-lg"
                         value={section.visualPrompt}
                         onChange={(event) =>
                           setSections((current: any[]) =>
@@ -893,7 +1318,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         }
                       />
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       <Button variant="outline" size="sm" onClick={() => moveSectionWithinGroup("hero", section.id, -1)} disabled={index === 0}>
                         <ArrowUp className="mr-1 h-4 w-4" />
                         上移
@@ -907,10 +1332,31 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         <ArrowDown className="mr-1 h-4 w-4" />
                         下移
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => runSingleGeneration(section)} disabled={runningSectionId === section.id}>
-                        {runningSectionId === section.id ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-1 h-4 w-4" />}
-                        {section.imageUrl ? "重生成当前头图" : "生成当前头图"}
-                      </Button>
+                      {isSectionGenerating(section) ? (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => cancelSectionGeneration(section)}
+                          disabled={cancelingSectionId === section.id}
+                        >
+                          {cancelingSectionId === section.id ? (
+                            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Square className="mr-1 h-4 w-4" />
+                          )}
+                          {cancelingSectionId === section.id ? "正在终止…" : "终止当前头图"}
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => runSingleGeneration(section)}
+                          disabled={bulkGenerating}
+                        >
+                          <ImagePlus className="mr-1 h-4 w-4" />
+                          {section.imageUrl ? "重生成当前头图" : "生成当前头图"}
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
@@ -940,6 +1386,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       </Button>
                       <Badge variant={getGenerationLabel(section) === "AI 真图" ? "success" : "outline"}>{getGenerationLabel(section)}</Badge>
                     </div>
+                    </div>
                   </CardContent>
                 </Card>
               ))
@@ -963,15 +1410,15 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             {detailSections.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border p-5 text-sm text-muted-foreground">
                 还没有详情页规划项。点击上方“AI 自动规划”后，会自动按分析页配置生成详情页模块。
               </div>
             ) : (
               detailSections.map((section: any, index: number) => (
-                <Card key={section.id} className="border-border/80 shadow-sm">
-                  <CardHeader>
+                <Card key={section.id} className="rounded-2xl border-border/80 shadow-sm">
+                  <CardHeader className="p-4 pb-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <CardTitle className="text-base">详情页 {index + 1}</CardTitle>
@@ -979,47 +1426,55 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge variant="outline">{previewConfig.imageAspectRatio} 详情页</Badge>
-                        <StatusBadge value={section.status} />
+                        <StatusBadge value={getSectionDisplayStatus(section)} />
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-                      <div className="space-y-2">
-                        <Label>模块类型</Label>
-                        <select
-                          className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
-                          value={String(section.type).toLowerCase()}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, type: value.toUpperCase() } : item)),
-                            );
-                          }}
-                        >
-                          {plannerSectionTypeOptions.map((type) => (
-                            <option key={type} value={type}>
-                              {sectionTypeLabels[type]}
-                            </option>
-                          ))}
-                        </select>
+                  <CardContent className={getPlannerCardContentClass(section)}>
+                    <CompletedSectionPreview
+                      section={section}
+                      aspectRatio={previewConfig.imageAspectRatio}
+                      onPreview={openImagePreview}
+                    />
+                    <div className="space-y-3">
+                      <div className="grid gap-3 lg:grid-cols-[190px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)]">
+                        <div className="space-y-2">
+                          <Label>模块类型</Label>
+                          <select
+                            className="flex h-9 w-full rounded-lg border border-input bg-white px-3 text-sm dark:bg-black/30 dark:text-slate-100"
+                            value={String(section.type).toLowerCase()}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, type: value.toUpperCase() } : item)),
+                              );
+                            }}
+                          >
+                            {plannerSectionTypeOptions.map((type) => (
+                              <option key={type} value={type}>
+                                {sectionTypeLabels[type]}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>模块标题</Label>
+                          <Input
+                            className="h-9 rounded-lg"
+                            value={section.title}
+                            onChange={(event) =>
+                              setSections((current: any[]) =>
+                                current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
+                              )
+                            }
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label>模块标题</Label>
-                        <Input
-                          value={section.title}
-                          onChange={(event) =>
-                            setSections((current: any[]) =>
-                              current.map((item) => (item.id === section.id ? { ...item, title: event.target.value } : item)),
-                            )
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+                    <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[250px_minmax(0,1fr)]">
                       <div className="space-y-2">
                         <Label>模块目标</Label>
                         <Input
+                          className="h-9 rounded-lg"
                           value={section.goal}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -1031,6 +1486,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                       <div className="space-y-2">
                         <Label>模块文案</Label>
                         <Textarea
+                          className="min-h-[72px] rounded-lg"
                           value={section.copy}
                           onChange={(event) =>
                             setSections((current: any[]) =>
@@ -1043,6 +1499,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     <div className="space-y-2">
                       <Label>双语视觉 Prompt</Label>
                       <Textarea
+                        className="max-h-[140px] min-h-[84px] rounded-lg"
                         value={section.visualPrompt}
                         onChange={(event) =>
                           setSections((current: any[]) =>
@@ -1053,7 +1510,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         }
                       />
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       <Button variant="outline" size="sm" onClick={() => moveSectionWithinGroup("detail", section.id, -1)} disabled={index === 0}>
                         <ArrowUp className="mr-1 h-4 w-4" />
                         上移
@@ -1067,10 +1524,31 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         <ArrowDown className="mr-1 h-4 w-4" />
                         下移
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => runSingleGeneration(section)} disabled={runningSectionId === section.id}>
-                        {runningSectionId === section.id ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-1 h-4 w-4" />}
-                        {section.imageUrl ? "重生成当前详情页" : "生成当前详情页"}
-                      </Button>
+                      {isSectionGenerating(section) ? (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => cancelSectionGeneration(section)}
+                          disabled={cancelingSectionId === section.id}
+                        >
+                          {cancelingSectionId === section.id ? (
+                            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Square className="mr-1 h-4 w-4" />
+                          )}
+                          {cancelingSectionId === section.id ? "正在终止…" : "终止当前详情页"}
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => runSingleGeneration(section)}
+                          disabled={bulkGenerating}
+                        >
+                          <ImagePlus className="mr-1 h-4 w-4" />
+                          {section.imageUrl ? "重生成当前详情页" : "生成当前详情页"}
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
@@ -1099,6 +1577,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                         删除
                       </Button>
                       <Badge variant={getGenerationLabel(section) === "AI 真图" ? "success" : "outline"}>{getGenerationLabel(section)}</Badge>
+                    </div>
                     </div>
                   </CardContent>
                 </Card>

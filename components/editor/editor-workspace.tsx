@@ -1,9 +1,10 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ImagePlus, Languages, Loader2, MessageCircle, RotateCcw, Save, ShoppingCart, Sparkles, Star } from "lucide-react";
+import { ImagePlus, Languages, Loader2, MessageCircle, RotateCcw, Save, ShoppingCart, Sparkles, Square, Star, ZoomIn } from "lucide-react";
 
+import { useImagePreview } from "@/components/shared/image-preview-provider";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useEditorStore } from "@/hooks/use-editor-store";
+import { fileToBase64Payload } from "@/lib/utils/base64-upload";
 import { contentLanguageLabels, contentLanguageOptions, normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
 
 interface EditorWorkspaceProps {
@@ -31,6 +33,7 @@ type TaskPayload = {
   errorMessage?: string | null;
 };
 type ImageAspectRatio = "3:4" | "9:16";
+type SectionAction = "generate" | "regenerate" | "repaint" | "enhance";
 type SectionKind =
   | "hero"
   | "selling_points"
@@ -88,6 +91,12 @@ const assetTypeLabels: Record<string, string> = {
   GENERATED: "生成图",
   EXPORTED: "导出文件",
 };
+
+const compactFieldClass = "space-y-1.5";
+const compactInputClass = "h-9 rounded-lg px-3 text-sm";
+const compactTextareaClass = "min-h-[72px] rounded-lg px-3 py-2 text-sm";
+const compactSelectClass = "flex h-9 w-full rounded-lg border border-input bg-white px-3 text-sm dark:bg-white/6 dark:text-slate-100";
+const compactActionButtonClass = "h-8 gap-1.5 px-2.5 text-xs";
 
 const previewTexts: Partial<Record<
   ContentLanguage,
@@ -162,8 +171,8 @@ const previewTexts: Partial<Record<
 function getPreviewConfig(project: any): PreviewConfig {
   const config = project?.modelSnapshot?.previewConfig ?? {};
   return {
-    heroImageCount: Math.min(5, Math.max(3, Number(config.heroImageCount ?? 4))),
-    detailSectionCount: Math.min(10, Math.max(4, Number(config.detailSectionCount ?? 6))),
+    heroImageCount: Math.min(5, Math.max(1, Number(config.heroImageCount ?? 4))),
+    detailSectionCount: Math.min(10, Math.max(1, Number(config.detailSectionCount ?? 6))),
     imageAspectRatio: config.imageAspectRatio === "3:4" ? "3:4" : "9:16",
     contentLanguage: normalizeContentLanguage(config.contentLanguage),
   };
@@ -178,6 +187,43 @@ function getGenerationLabel(section: any) {
   if (mode === "image_api") return "AI 真图";
   if (mode === "svg_fallback") return "SVG 兜底";
   return null;
+}
+
+function SectionImageThumbnail({
+  section,
+  size = "sm",
+  liftOnHover = true,
+  onPreview,
+}: {
+  section: any;
+  size?: "sm" | "panel" | "md";
+  liftOnHover?: boolean;
+  onPreview: (section: any) => void;
+}) {
+  if (!section?.imageUrl) {
+    return null;
+  }
+
+  const sizeClass = size === "md" ? "h-36 w-full" : size === "panel" ? "h-16 w-24" : "h-[68px] w-[68px]";
+  const imageFitClass = size === "sm" ? "object-cover" : "object-contain";
+  const hoverClass = liftOnHover ? "hover:-translate-y-0.5 hover:shadow-md" : "hover:shadow-md";
+
+  return (
+    <button
+      type="button"
+      className={`group relative shrink-0 overflow-hidden rounded-xl border border-border bg-slate-100 shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${sizeClass} ${hoverClass}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onPreview(section);
+      }}
+      aria-label={`放大查看 ${section.title}`}
+    >
+      <img src={section.imageUrl} alt={section.title} className={`h-full w-full ${imageFitClass}`} />
+      <span className="pointer-events-none absolute bottom-1.5 right-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        <ZoomIn className="h-3.5 w-3.5" />
+      </span>
+    </button>
+  );
 }
 
 function buildGalleryImages(project: any, heroImageCount: number) {
@@ -269,11 +315,18 @@ function getActionText(action: string | null) {
 }
 
 export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProps) {
+  const { openImagePreview } = useImagePreview();
   const [project, setProject] = useState(initialProject);
   const [checkedReferences, setCheckedReferences] = useState<string[]>([]);
-  const [runningAction, setRunningAction] = useState<string | null>(null);
+  const [runningSectionActions, setRunningSectionActions] = useState<Record<string, SectionAction>>({});
+  const [cancelingSectionId, setCancelingSectionId] = useState<string | null>(null);
+  const [referenceUploading, setReferenceUploading] = useState(false);
+  const [runningPageAction, setRunningPageAction] = useState<"translate-page" | null>(null);
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
+  const referenceUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const previewScrollRef = useRef<HTMLDivElement | null>(null);
+  const previewSectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const { selectedSectionId, setSelectedSectionId } = useEditorStore();
   useEffect(() => {
     if (!selectedSectionId && initialProject.sections[0]) {
@@ -287,12 +340,32 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     () => project.sections.find((section: any) => section.id === selectedSectionId) ?? project.sections[0] ?? null,
     [project.sections, selectedSectionId],
   );
+
+  const openSectionPreview = (section: any) => {
+    if (!section?.imageUrl) return;
+
+    openImagePreview({
+      url: section.imageUrl,
+      title: section.title,
+      meta: `${section.type === "HERO" ? "头图" : previewConfig.imageAspectRatio} · ${
+        sectionTypeLabels[String(section.type).toLowerCase() as SectionKind] ?? section.type
+      }`,
+    });
+  };
   const referenceAssets = useMemo(
     () => project.assets.filter((asset: any) => ["REFERENCE", "DETAIL", "ANGLE"].includes(asset.type)),
     [project.assets],
   );
   const galleryImages = useMemo(() => buildGalleryImages(project, previewConfig.heroImageCount), [project, previewConfig.heroImageCount]);
   const activeHeroImage = galleryImages[selectedHeroIndex] ?? galleryImages[0] ?? null;
+  const selectedSectionIsHero = String(selectedSection?.type).toUpperCase() === "HERO";
+  const selectedHeroPreviewIndex = useMemo(() => {
+    if (!selectedSectionIsHero || !selectedSection?.id) {
+      return -1;
+    }
+
+    return galleryImages.findIndex((image) => image.id === selectedSection.id);
+  }, [galleryImages, selectedSection?.id, selectedSectionIsHero]);
   const comments = useMemo(() => buildCommentCards(project.analysis?.normalizedResult), [project.analysis?.normalizedResult]);
   const productDescription = useMemo(
     () => buildProductDescription(project.analysis?.normalizedResult, project.sections),
@@ -304,6 +377,10 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   );
   const hasGeneratedImage = Boolean(selectedSection?.imageUrl);
   const generatedSections = useMemo(() => project.sections.filter((section: any) => Boolean(section.imageUrl)), [project.sections]);
+  const selectedSectionAction = selectedSection ? runningSectionActions[selectedSection.id] ?? null : null;
+  const hasRunningSectionAction = Object.keys(runningSectionActions).length > 0;
+  const selectedSectionIsGenerating = selectedSection?.status === "GENERATING" || Boolean(selectedSectionAction);
+  const hasGeneratingSection = hasRunningSectionAction || project.sections.some((section: any) => section.status === "GENERATING");
 
   useEffect(() => {
     if (selectedHeroIndex >= galleryImages.length) {
@@ -311,12 +388,59 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     }
   }, [galleryImages.length, selectedHeroIndex]);
 
+  useEffect(() => {
+    if (!selectedSection || !previewScrollRef.current) {
+      return;
+    }
+
+    const scrollContainer = previewScrollRef.current;
+    if (selectedSectionIsHero) {
+      if (selectedHeroPreviewIndex >= 0) {
+        setSelectedHeroIndex(selectedHeroPreviewIndex);
+      }
+      scrollContainer.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      const target = previewSectionRefs.current[selectedSection.id];
+      if (!target || !previewScrollRef.current) {
+        return;
+      }
+
+      previewScrollRef.current.scrollTo({
+        top: Math.max(target.offsetTop - 8, 0),
+        behavior: "smooth",
+      });
+    });
+  }, [selectedHeroPreviewIndex, selectedSection?.id, selectedSectionIsHero]);
+
   const refreshProject = async () => {
     const response = await fetch(`/api/projects/${project.id}`);
     const payload = await response.json();
     if (payload.success) {
       setProject(payload.data);
     }
+  };
+
+  const setSectionStatus = (sectionId: string, status: string) => {
+    setProject((current: any) => ({
+      ...current,
+      sections: current.sections.map((section: any) => (section.id === sectionId ? { ...section, status } : section)),
+    }));
+  };
+
+  const startSectionAction = (sectionId: string, action: SectionAction) => {
+    setRunningSectionActions((current) => ({ ...current, [sectionId]: action }));
+    setSectionStatus(sectionId, "GENERATING");
+  };
+
+  const finishSectionAction = (sectionId: string) => {
+    setRunningSectionActions((current) => {
+      const next = { ...current };
+      delete next[sectionId];
+      return next;
+    });
   };
 
   const saveSection = async () => {
@@ -345,17 +469,25 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
 
   const runGeneration = async (kind: "generate" | "regenerate") => {
     if (!selectedSection) return;
-    setRunningAction(kind);
+    const sectionId = selectedSection.id;
+    const previousStatus = selectedSection.status;
+    startSectionAction(sectionId, kind);
 
     try {
-      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/${kind}`, {
+      const response = await fetch(`/api/projects/${project.id}/sections/${sectionId}/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ referenceAssetIds: checkedReferences }),
       });
       const payload = await response.json();
       if (!payload.success) {
-        toast.error(payload.error?.message ?? "图像生成失败");
+        const message = payload.error?.message ?? "图像生成失败";
+        if (/task canceled/i.test(message)) {
+          toast.message("已终止当前模块图生成");
+        } else {
+          toast.error(message);
+        }
+        await refreshProject();
         return;
       }
       if (payload.data?.generationMode === "svg_fallback") {
@@ -364,24 +496,102 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         toast.success(kind === "generate" ? "模块图已生成并自动保存到当前项目" : "模块图已重新生成并自动保存到版本历史");
       }
       await refreshProject();
+    } catch (error) {
+      if (error instanceof Error && /task canceled/i.test(error.message)) {
+        toast.message("已终止当前模块图生成");
+      } else {
+        toast.error(error instanceof Error ? error.message : "图像生成失败");
+      }
+      setSectionStatus(sectionId, previousStatus);
     } finally {
-      setRunningAction(null);
+      finishSectionAction(sectionId);
+    }
+  };
+
+  const cancelSectionGeneration = async () => {
+    if (!selectedSection || !selectedSectionIsGenerating || cancelingSectionId) return;
+
+    const sectionId = selectedSection.id;
+    setCancelingSectionId(sectionId);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/sections/${sectionId}/cancel-generation`, {
+        method: "POST",
+      });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error?.message ?? "终止当前模块图失败");
+      }
+
+      finishSectionAction(sectionId);
+      await refreshProject();
+      toast.message(payload.data?.canceled === false ? "当前模块没有可终止的生成任务" : "已终止当前模块图生成");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "终止当前模块图失败");
+    } finally {
+      setCancelingSectionId(null);
+    }
+  };
+
+  const uploadReferenceImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+
+    setReferenceUploading(true);
+    const uploadedAssetIds: string[] = [];
+    try {
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) {
+          throw new Error(`${file.name} 不是有效的图片文件`);
+        }
+
+        const base64Payload = await fileToBase64Payload(file);
+        const response = await fetch(`/api/projects/${project.id}/assets/upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "REFERENCE", ...base64Payload }),
+        });
+        const payload = await response.json();
+        if (!payload.success || !payload.data?.id) {
+          throw new Error(payload.error?.message ?? `${file.name} 上传失败`);
+        }
+        uploadedAssetIds.push(payload.data.id);
+      }
+
+      setCheckedReferences((current) => [...new Set([...current, ...uploadedAssetIds])]);
+      await refreshProject();
+      toast.success(`已添加 ${uploadedAssetIds.length} 张参考图，并自动勾选`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "参考图上传失败");
+      await refreshProject();
+    } finally {
+      setReferenceUploading(false);
     }
   };
 
   const runImageEdit = async (editMode: "repaint" | "enhance" | "translate", targetLanguage?: ContentLanguage) => {
     if (!selectedSection) return;
-    setRunningAction(editMode);
+    const sectionId = selectedSection.id;
+    const previousStatus = selectedSection.status;
+    if (editMode !== "translate") {
+      startSectionAction(sectionId, editMode);
+    }
 
     try {
-      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/edit`, {
+      const response = await fetch(`/api/projects/${project.id}/sections/${sectionId}/edit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ referenceAssetIds: checkedReferences, editMode, targetLanguage }),
       });
       const payload = await response.json();
       if (!payload.success) {
-        toast.error(payload.error?.message ?? "基于当前图编辑失败");
+        const message = payload.error?.message ?? "基于当前图编辑失败";
+        if (/task canceled/i.test(message)) {
+          toast.message("已终止当前模块图编辑");
+        } else {
+          toast.error(message);
+        }
+        await refreshProject();
         return;
       }
       if (payload.data?.generationMode === "svg_fallback") {
@@ -390,8 +600,19 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         toast.success(editMode === "translate" ? "已将当前图转为目标语言，并自动保存新版本" : editMode === "repaint" ? "已基于当前图完成重绘，并自动保存新版本" : "已基于当前图完成增强，并自动保存新版本");
       }
       await refreshProject();
+    } catch (error) {
+      if (error instanceof Error && /task canceled/i.test(error.message)) {
+        toast.message("已终止当前模块图编辑");
+      } else {
+        toast.error(error instanceof Error ? error.message : "基于当前图编辑失败");
+      }
+      if (editMode !== "translate") {
+        setSectionStatus(sectionId, previousStatus);
+      }
     } finally {
-      setRunningAction(null);
+      if (editMode !== "translate") {
+        finishSectionAction(sectionId);
+      }
     }
   };
 
@@ -402,7 +623,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       return;
     }
 
-    setRunningAction("translate-page");
+    setRunningPageAction("translate-page");
     try {
       const response = await fetch(`/api/projects/${project.id}/translate-page`, {
         method: "POST",
@@ -448,7 +669,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "整页语言转换失败");
     } finally {
-      setRunningAction(null);
+      setRunningPageAction(null);
     }
   };
 
@@ -471,37 +692,47 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     }));
   };
   return (
-    <div className="grid min-h-0 gap-6 xl:grid-cols-[320px_minmax(0,1fr)_380px] xl:items-stretch">
+    <div className="grid min-h-0 gap-5 xl:grid-cols-[300px_minmax(0,1fr)_360px] xl:items-stretch">
       <Card className="flex min-h-0 min-w-0 flex-col xl:h-[920px]">
-        <CardHeader>
-          <CardTitle>模块结构树</CardTitle>
-          <CardDescription>查看模块顺序、生成状态和当前选中的编辑对象。</CardDescription>
+        <CardHeader className="p-5 pb-3">
+          <CardTitle className="text-base">模块结构树</CardTitle>
+          <CardDescription className="text-xs leading-5">查看模块顺序、生成状态和当前选中的编辑对象。</CardDescription>
         </CardHeader>
-        <CardContent className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-          <div className="space-y-3 pr-1">
+        <CardContent className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5 pt-0">
+          <div className="space-y-2.5 pr-0.5">
             {project.sections.map((section: any, index: number) => (
-              <button
+              <div
                 key={section.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onClick={() => setSelectedSectionId(section.id)}
-                className={`w-full rounded-2xl border p-4 text-left transition-[transform,background-color,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-md active:scale-[0.99] ${
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedSectionId(section.id);
+                  }
+                }}
+                className={`relative w-full cursor-pointer rounded-2xl border px-3 pb-2.5 pt-9 text-left transition-[background-color,border-color,box-shadow] duration-200 hover:shadow-md active:scale-[0.99] ${
                   section.id === selectedSection?.id
                     ? "border-primary bg-primary/5 dark:border-white/20 dark:bg-white/10"
                     : "border-border bg-white dark:border-white/10 dark:bg-white/[0.04]"
                 }`}
               >
-                <div className="space-y-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                      <p className="text-xs tracking-[0.18em] text-muted-foreground">#{index + 1}</p>
-                      <p className="truncate font-medium">{section.title}</p>
-                      <p className="text-xs text-muted-foreground">{sectionTypeLabels[String(section.type).toLowerCase() as SectionKind] ?? section.type}</p>
+                <span className="absolute left-3 top-2.5 text-xs font-medium tracking-[0.14em] text-muted-foreground">#{index + 1}</span>
+                <div className="absolute right-2.5 top-1.5">
+                  <StatusBadge value={runningSectionActions[section.id] ? "GENERATING" : section.status} />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-2.5">
+                    <div className="min-w-0 flex-1 space-y-1 pr-1">
+                      <p className="line-clamp-2 font-medium leading-5">{section.title}</p>
+                      <p className="truncate text-xs text-muted-foreground">{sectionTypeLabels[String(section.type).toLowerCase() as SectionKind] ?? section.type}</p>
                     </div>
                     <div className="shrink-0">
-                      <StatusBadge value={section.status} />
+                      <SectionImageThumbnail section={section} liftOnHover={false} onPreview={openSectionPreview} />
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-1.5">
                     <Badge variant="outline" className="max-w-full">
                       <span className="truncate">{sectionTypeLabels[String(section.type).toLowerCase() as SectionKind] ?? section.type}</span>
                     </Badge>
@@ -512,7 +743,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                     ) : null}
                   </div>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         </CardContent>
@@ -529,12 +760,16 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
             <div className="absolute left-[6px] top-[160px] h-[96px] w-[4px] rounded-full bg-white/15" />
             <div className="absolute right-[6px] top-[190px] h-[132px] w-[4px] rounded-full bg-white/15" />
             <div className="relative isolate flex h-full flex-col overflow-hidden rounded-[2.55rem] border border-white/10 bg-[#f7f7f7]">
-              <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
+              <div ref={previewScrollRef} className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
                 <section className="bg-white">
                   <div className="overflow-hidden">
                     {galleryImages.length > 0 ? (
                       <div className="space-y-2">
-                        <div className="relative aspect-square bg-slate-100">
+                        <div
+                          className={`relative aspect-square bg-slate-100 transition-shadow ${
+                            activeHeroImage?.id === selectedSection?.id ? "ring-4 ring-primary/80 ring-inset" : ""
+                          }`}
+                        >
                           {activeHeroImage ? <img src={activeHeroImage.url} alt={activeHeroImage.label} className="h-full w-full object-cover" /> : null}
                           {activeHeroImage?.generationLabel ? (
                             <div className="absolute left-3 top-3 rounded-full bg-black/65 px-3 py-1 text-xs text-white">{activeHeroImage.generationLabel}</div>
@@ -619,7 +854,17 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
 
                 <div className="space-y-0 pb-0">
                   {detailSections.map((section: any) => (
-                    <section key={section.id} className="bg-white">
+                    <section
+                      key={section.id}
+                      ref={(node) => {
+                        if (node) {
+                          previewSectionRefs.current[section.id] = node;
+                        } else {
+                          delete previewSectionRefs.current[section.id];
+                        }
+                      }}
+                      className={`bg-white transition-shadow ${section.id === selectedSection?.id ? "relative z-10 ring-4 ring-primary/80 ring-inset" : ""}`}
+                    >
                       {section.imageUrl ? (
                         <div className="relative bg-slate-100">
                           <img src={section.imageUrl} alt={section.title} className="w-full object-cover" />
@@ -676,31 +921,114 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         </CardContent>
       </Card>
       <Card className="flex min-h-0 min-w-0 flex-col xl:h-[920px]">
-        <CardHeader>
-          <CardTitle>模块编辑面板</CardTitle>
-          <CardDescription>编辑模块内容、发起生成与重绘，并管理版本历史。</CardDescription>
+        <CardHeader className="p-4 pb-2.5">
+          <CardTitle className="text-base">模块编辑面板</CardTitle>
+          <CardDescription className="text-xs leading-5">编辑模块内容、发起生成与重绘，并管理版本历史。</CardDescription>
         </CardHeader>
-        <CardContent className="min-h-0 flex-1 space-y-4 overflow-y-auto overflow-x-hidden">
+        <CardContent className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overflow-x-hidden p-4 pt-0">
           {!selectedSection ? (
-            <div className="rounded-3xl border border-dashed border-border p-6 text-sm text-muted-foreground">请选择一个模块开始编辑。</div>
+            <div className="rounded-2xl border border-dashed border-border p-4 text-sm text-muted-foreground">请选择一个模块开始编辑。</div>
           ) : (
             <>
-              <div className="rounded-2xl border border-border bg-muted/40 p-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium">当前出图结果</span>
-                  {getGenerationLabel(selectedSection) ? (
-                    <Badge variant={getGenerationLabel(selectedSection) === "AI 真图" ? "success" : "outline"}>{getGenerationLabel(selectedSection)}</Badge>
-                  ) : (
-                    <Badge variant="outline">尚未生成</Badge>
-                  )}
+              <div className="sticky top-0 z-20 -mx-4 bg-background/95 px-4 pb-2 pt-0 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                <div className="space-y-2 rounded-xl border border-border bg-card p-2 shadow-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button onClick={saveSection} className={compactActionButtonClass}>
+                      <Save className="h-3.5 w-3.5" />
+                      保存
+                    </Button>
+                    <Button onClick={() => runGeneration(hasGeneratedImage ? "regenerate" : "generate")} disabled={selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
+                      {selectedSectionIsGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                      {hasGeneratedImage ? "重新生成当前图" : "生成当前模块图"}
+                    </Button>
+                    {selectedSectionIsGenerating ? (
+                      <>
+                        <Button
+                          type="button"
+                          onClick={cancelSectionGeneration}
+                          disabled={cancelingSectionId === selectedSection.id || Boolean(runningPageAction)}
+                          variant="destructive"
+                          className={compactActionButtonClass}
+                        >
+                          {cancelingSectionId === selectedSection.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
+                          {cancelingSectionId === selectedSection.id ? "终止中..." : "终止生成"}
+                        </Button>
+                        <span className="basis-full min-w-0 truncate px-1 text-xs text-muted-foreground">
+                          {selectedSectionAction ? getActionText(selectedSectionAction) : "当前模块图正在生成，请稍候..."}
+                        </span>
+                      </>
+                    ) : null}
+                  </div>
+
+                  <div className="grid gap-2">
+                    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 p-1.5">
+                      <span className="px-1 text-xs font-medium text-muted-foreground">当前图</span>
+                      <Button onClick={() => runImageEdit("repaint")} disabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
+                        {selectedSectionAction === "repaint" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                        重绘
+                      </Button>
+                      <Button onClick={() => runImageEdit("enhance")} disabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
+                        {selectedSectionAction === "enhance" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                        增强
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-1.5 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:items-center">
+                      <div className="flex items-center gap-1 px-1">
+                        <span className="text-xs font-medium text-muted-foreground">整页转换</span>
+                        <Badge variant="outline">{generatedSections.length} 张</Badge>
+                      </div>
+                      <select
+                        className={compactSelectClass}
+                        value={translationTargetLanguage}
+                        onChange={(event) => setTranslationTargetLanguage(normalizeContentLanguage(event.target.value))}
+                      >
+                        {contentLanguageOptions.map((language) => (
+                          <option key={language} value={language}>
+                            {contentLanguageLabels[language]}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        type="button"
+                        onClick={translateGeneratedDetailPage}
+                        disabled={generatedSections.length === 0 || hasGeneratingSection || Boolean(runningPageAction)}
+                        variant="outline"
+                        className={compactActionButtonClass}
+                      >
+                        {runningPageAction === "translate-page" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Languages className="h-3.5 w-3.5" />}
+                        一键转换
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-                <p className="mt-2 text-xs leading-5 text-muted-foreground">生成完成后会自动保存到项目资源、版本历史以及当前生效版本。</p>
               </div>
 
-              <div className="space-y-2">
-                <Label>类型</Label>
+              <div className="rounded-xl border border-border bg-muted/40 p-2.5 text-sm">
+                <div className="flex items-start gap-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">当前出图结果</span>
+                      {getGenerationLabel(selectedSection) ? (
+                        <Badge variant={getGenerationLabel(selectedSection) === "AI 真图" ? "success" : "outline"}>{getGenerationLabel(selectedSection)}</Badge>
+                      ) : (
+                        <Badge variant="outline">尚未生成</Badge>
+                      )}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                      自动保存到资源、版本历史和当前版本。
+                    </p>
+                  </div>
+                  {selectedSection.imageUrl ? (
+                    <SectionImageThumbnail section={selectedSection} size="panel" liftOnHover={false} onPreview={openSectionPreview} />
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2">
+                <Label className="text-xs text-muted-foreground">类型</Label>
                 <select
-                  className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm"
+                  className={compactSelectClass}
                   value={String(selectedSection.type).toLowerCase()}
                   onChange={(event) => updateSelectedSection("type", event.target.value.toUpperCase())}
                 >
@@ -712,128 +1040,109 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                 </select>
               </div>
 
-              <div className="space-y-2">
-                <Label>标题</Label>
-                <Input value={selectedSection.title} onChange={(event) => updateSelectedSection("title", event.target.value)} />
+              <div className="grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2">
+                <Label className="text-xs text-muted-foreground">标题</Label>
+                <Input className={compactInputClass} value={selectedSection.title} onChange={(event) => updateSelectedSection("title", event.target.value)} />
               </div>
 
-              <div className="space-y-2">
-                <Label>模块目标</Label>
-                <Input value={selectedSection.goal} onChange={(event) => updateSelectedSection("goal", event.target.value)} />
+              <div className="grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2">
+                <Label className="text-xs text-muted-foreground">模块目标</Label>
+                <Input className={compactInputClass} value={selectedSection.goal} onChange={(event) => updateSelectedSection("goal", event.target.value)} />
               </div>
 
-              <div className="space-y-2">
-                <Label>模块文案</Label>
-                <Textarea value={selectedSection.copy} onChange={(event) => updateSelectedSection("copy", event.target.value)} />
+              <div className={compactFieldClass}>
+                <Label className="text-xs text-muted-foreground">模块文案</Label>
+                <Textarea className={compactTextareaClass} value={selectedSection.copy} onChange={(event) => updateSelectedSection("copy", event.target.value)} />
               </div>
 
-              <div className="space-y-2">
-                <Label>双语视觉 Prompt</Label>
-                <Textarea value={selectedSection.visualPrompt} onChange={(event) => updateSelectedSection("visualPrompt", event.target.value)} />
+              <div className={compactFieldClass}>
+                <Label className="text-xs text-muted-foreground">双语视觉 Prompt</Label>
+                <Textarea className="max-h-[108px] min-h-[72px] rounded-lg px-3 py-2 text-sm" value={selectedSection.visualPrompt} onChange={(event) => updateSelectedSection("visualPrompt", event.target.value)} />
                 <p className="text-xs text-muted-foreground">系统会要求图像模型把标题、卖点和 CTA 直接生成进图片中，而不是在页面外拼接文字。</p>
               </div>
 
-              <div className="space-y-2">
-                <Label>参考图</Label>
+              <div className={compactFieldClass}>
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs text-muted-foreground">参考图</Label>
+                  <>
+                    <Input
+                      ref={referenceUploadInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={uploadReferenceImages}
+                      className="hidden"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={compactActionButtonClass}
+                      onClick={() => referenceUploadInputRef.current?.click()}
+                      disabled={referenceUploading || selectedSectionIsGenerating || Boolean(runningPageAction)}
+                    >
+                      {referenceUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                      {referenceUploading ? "上传中..." : "添加参考图"}
+                    </Button>
+                  </>
+                </div>
                 {referenceAssets.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">当前没有可选参考图</p>
+                  <p className="text-xs text-muted-foreground">当前没有可选参考图</p>
                 ) : (
-                  <div className="space-y-2 rounded-2xl border border-border p-3">
+                  <div className="space-y-1.5 rounded-xl border border-border p-2.5">
                     {referenceAssets.map((asset: any) => (
-                      <label key={asset.id} className="flex items-center gap-3 rounded-xl border border-transparent px-2 py-2 transition-colors hover:border-border hover:bg-muted/40">
-                        <input
-                          type="checkbox"
-                          checked={checkedReferences.includes(asset.id)}
-                          onChange={(event) => {
-                            setCheckedReferences((current) =>
-                              event.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id),
-                            );
-                          }}
-                        />
-                        <span className="text-sm">{assetTypeLabels[asset.type] ?? asset.fileName}</span>
-                      </label>
+                      <div
+                        key={asset.id}
+                        className="flex min-h-12 items-center gap-2 rounded-lg border border-transparent px-2 py-1 transition-colors hover:border-border hover:bg-muted/40"
+                      >
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch">
+                          <input
+                            type="checkbox"
+                            checked={checkedReferences.includes(asset.id)}
+                            onChange={(event) => {
+                              setCheckedReferences((current) =>
+                                event.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id),
+                              );
+                            }}
+                          />
+                          <span className="truncate text-sm">{assetTypeLabels[asset.type] ?? asset.fileName}</span>
+                        </label>
+                        <button
+                          type="button"
+                          className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-border bg-muted transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                          title={`预览${asset.fileName}`}
+                          aria-label={`预览${asset.fileName}`}
+                          onClick={() =>
+                            openImagePreview({
+                              url: asset.url,
+                              title: asset.fileName,
+                              meta: assetTypeLabels[asset.type] ?? asset.type,
+                            })
+                          }
+                        >
+                          <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover" />
+                        </button>
+                      </div>
                     ))}
                   </div>
                 )}
                 <p className="text-xs text-muted-foreground">系统会自动把主商品图作为产品锚点，这里勾选的是额外参考图，会一起以 base64 方式发送给 AI。</p>
               </div>
 
-              <div className="space-y-3 rounded-2xl border border-border p-3">
-                <div className="flex flex-wrap gap-3">
-                  <Button onClick={saveSection} className="gap-2">
-                    <Save className="h-4 w-4" />
-                    保存
-                  </Button>
-                  <Button onClick={() => runGeneration(hasGeneratedImage ? "regenerate" : "generate")} disabled={Boolean(runningAction)} variant="outline" className="gap-2">
-                    {runningAction === "generate" || runningAction === "regenerate" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
-                    {hasGeneratedImage ? "重新生成当前图" : "生成当前模块图"}
-                  </Button>
-                </div>
-                <div className="rounded-2xl border border-border bg-muted/30 p-3">
-                  <p className="text-sm font-medium">基于当前图优化</p>
-                  <p className="mt-1 text-xs text-muted-foreground">已有当前图时，可选择重绘构图，或在保留现有构图基础上做增强。</p>
-                  <div className="mt-3 flex flex-wrap gap-3">
-                    <Button onClick={() => runImageEdit("repaint")} disabled={!hasGeneratedImage || Boolean(runningAction)} variant="outline" className="gap-2">
-                      {runningAction === "repaint" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
-                      基于当前图重绘
-                    </Button>
-                    <Button onClick={() => runImageEdit("enhance")} disabled={!hasGeneratedImage || Boolean(runningAction)} variant="outline" className="gap-2">
-                      {runningAction === "enhance" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                      基于当前图增强
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-border bg-muted/30 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">详情页语言转换</p>
-                      <p className="mt-1 text-xs text-muted-foreground">使用图像编辑能力逐张替换图内文字，尽量保留原构图、产品和视觉风格。</p>
-                    </div>
-                    <Badge variant="outline">{generatedSections.length} 张</Badge>
-                  </div>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
-                    <select
-                      className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm dark:bg-white/6 dark:text-slate-100"
-                      value={translationTargetLanguage}
-                      onChange={(event) => setTranslationTargetLanguage(normalizeContentLanguage(event.target.value))}
-                    >
-                      {contentLanguageOptions.map((language) => (
-                        <option key={language} value={language}>
-                          {contentLanguageLabels[language]}
-                        </option>
-                      ))}
-                    </select>
-                    <Button
-                      type="button"
-                      onClick={translateGeneratedDetailPage}
-                      disabled={generatedSections.length === 0 || Boolean(runningAction)}
-                      variant="outline"
-                      className="gap-2"
-                    >
-                      {runningAction === "translate-page" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Languages className="h-4 w-4" />}
-                      一键转换整页
-                    </Button>
-                  </div>
-                </div>
-                {runningAction ? <p className="text-xs text-muted-foreground">{getActionText(runningAction)}</p> : null}
-              </div>
-
-              <div className="space-y-3">
+              <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold">版本历史</h3>
                   <Badge variant="outline">{selectedSection.versions?.length ?? 0} 个版本</Badge>
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-2">
                   {(selectedSection.versions ?? []).map((version: any) => (
-                    <div key={version.id} className="rounded-2xl border border-border p-3">
+                    <div key={version.id} className="rounded-xl border border-border p-2.5">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-medium">v{version.versionNumber}</p>
                           <p className="text-xs text-muted-foreground">{version.isActive ? "当前生效版本" : "历史版本"}</p>
                         </div>
                         {!version.isActive ? (
-                          <Button size="sm" variant="outline" onClick={() => activateVersion(version.id)}>
+                          <Button size="sm" variant="outline" className="h-8 px-2.5 text-xs" onClick={() => activateVersion(version.id)}>
                             设为当前
                           </Button>
                         ) : (

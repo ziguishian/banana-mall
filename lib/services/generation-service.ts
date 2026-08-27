@@ -9,7 +9,15 @@ import {
 } from "@/lib/ai/prompts";
 import { prisma } from "@/lib/db/prisma";
 import { getProviderAdapter } from "@/lib/services/provider-service";
-import { completeTask, createTask, failTask, findRecentRunningTask } from "@/lib/services/task-service";
+import {
+  assertTaskNotCanceled,
+  completeTask,
+  createTask,
+  failTask,
+  findRecentRunningTask,
+  registerTaskAbortController,
+  releaseTaskAbortController,
+} from "@/lib/services/task-service";
 import { buildVisualPromptWithAgent } from "@/lib/services/visual-prompt-agent";
 import { readStorageFile, saveGeneratedImage } from "@/lib/storage/asset-manager";
 import { normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
@@ -61,6 +69,10 @@ type AdapterContext = Awaited<ReturnType<typeof getProviderAdapter>>["adapter"];
 type AssetRecord = Pick<ProductAsset, "id" | "filePath" | "fileName" | "mimeType" | "type" | "isMain">;
 type SectionImageAspectRatio = "1:1" | "3:4" | "9:16";
 
+function isTaskCanceledError(error: unknown) {
+  return error instanceof Error && /task canceled/i.test(error.message);
+}
+
 function getGenerationSettings(project: { modelSnapshot: unknown } | null) {
   const snapshot = (project?.modelSnapshot as Record<string, unknown> | null) ?? {};
   const settings = (snapshot.generationSettings as Record<string, unknown> | null) ?? {};
@@ -86,6 +98,12 @@ function getProjectVisualStyleGuide(project: { modelSnapshot: unknown; style?: s
   });
   return readVisualStyleGuide(project.modelSnapshot, fallback) ?? fallback;
 }
+
+function readGenerationRequirements(analysis: unknown) {
+  const value = (analysis as Record<string, unknown> | null)?.generationRequirements;
+  return typeof value === "string" ? value : "";
+}
+
 function getSectionAspectRatio(
   section: Pick<PageSection, "type">,
   detailAspectRatio: "3:4" | "9:16",
@@ -370,6 +388,7 @@ async function generateWithFallback(params: {
   projectId: string;
   sectionId: string;
   operation: string;
+  signal?: AbortSignal;
 }) {
   const errors: string[] = [];
 
@@ -386,6 +405,7 @@ async function generateWithFallback(params: {
           sectionId: params.sectionId,
           operation: params.operation,
         },
+        signal: params.signal,
       });
 
       return {
@@ -394,6 +414,7 @@ async function generateWithFallback(params: {
         attemptedModels: params.candidateModels,
       };
     } catch (error) {
+      if (isTaskCanceledError(error)) throw error;
       const message = error instanceof Error ? error.message : "Unknown image generation error";
       errors.push(`${model}: ${message}`);
 
@@ -417,6 +438,7 @@ async function editWithFallback(params: {
   projectId: string;
   sectionId: string;
   operation: string;
+  signal?: AbortSignal;
 }) {
   const errors: string[] = [];
 
@@ -434,6 +456,7 @@ async function editWithFallback(params: {
           sectionId: params.sectionId,
           operation: params.operation,
         },
+        signal: params.signal,
       });
 
       return {
@@ -442,6 +465,7 @@ async function editWithFallback(params: {
         attemptedModels: params.candidateModels,
       };
     } catch (error) {
+      if (isTaskCanceledError(error)) throw error;
       const message = error instanceof Error ? error.message : "Unknown image edit error";
       errors.push(`${model}: ${message}`);
 
@@ -462,6 +486,7 @@ async function generateSvgLayoutSpec(params: {
   projectId: string;
   sectionId: string;
   operation: string;
+  signal?: AbortSignal;
 }) {
   const errors: string[] = [];
 
@@ -477,6 +502,7 @@ async function generateSvgLayoutSpec(params: {
           sectionId: params.sectionId,
           operation: params.operation,
         },
+        signal: params.signal,
       });
 
       const parsed = svgLayoutSchema.parse(JSON.parse(extractJsonBlock(result.text)));
@@ -485,6 +511,7 @@ async function generateSvgLayoutSpec(params: {
         parsed,
       };
     } catch (error) {
+      if (isTaskCanceledError(error)) throw error;
       errors.push(`${model}: ${error instanceof Error ? error.message : "Unknown SVG layout error"}`);
     }
   }
@@ -564,6 +591,7 @@ async function generateSvgFallback(params: {
   referenceAssets: AssetRecord[];
   aspectRatio: SectionImageAspectRatio;
   contentLanguage: ContentLanguage;
+  signal?: AbortSignal;
 }) {
   const modelCandidates = buildSvgModelCandidates(params.provider);
   if (!modelCandidates.length) {
@@ -585,6 +613,7 @@ async function generateSvgFallback(params: {
     projectId: params.section.projectId,
     sectionId: params.section.id,
     operation: "svg_fallback_layout",
+    signal: params.signal,
   });
 
   const productImageAsset = params.referenceAssets[0] ?? null;
@@ -614,6 +643,7 @@ async function generateSectionImageInternal(
     preferredModelId?: string | null;
     referenceAssetIds?: string[];
     regenerate?: boolean;
+    onTaskCreated?: (taskId: string) => void | Promise<void>;
   },
 ) {
   const project = await prisma.project.findUnique({
@@ -636,16 +666,6 @@ async function generateSectionImageInternal(
     throw new Error("Section not found.");
   }
 
-  const { provider, adapter } = await getProviderAdapter();
-  const generationSettings = getGenerationSettings(project);
-  const visualStyleGuide = getProjectVisualStyleGuide(project);
-  const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
-  const outputSize = getOutputSize(sectionAspectRatio);
-  const modelCandidates = buildImageModelCandidates(provider, options);
-  const selectedModel = modelCandidates[0] ?? null;
-  const explicitReferenceAssets = await resolveReferenceAssets(options?.referenceAssetIds ?? []);
-  const effectiveReferenceAssets = mergeReferenceAssets(project.assets as AssetRecord[], explicitReferenceAssets as AssetRecord[]);
-  const referenceImages = await Promise.all(effectiveReferenceAssets.map((asset) => assetToDataUrl(asset)));
   const runningTask = await findRecentRunningTask({
     projectId,
     sectionId,
@@ -661,32 +681,50 @@ async function generateSectionImageInternal(
     sectionId,
     taskType: options?.regenerate ? "REGENERATE" : "GENERATE",
     inputPayload: {
-      model: selectedModel,
-      modelCandidates,
       referenceAssetIds: options?.referenceAssetIds ?? [],
-      effectiveReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
-      allowSvgFallback: generationSettings.allowSvgFallback,
+      regenerate: Boolean(options?.regenerate),
     },
   });
-
-  await prisma.pageSection.update({
-    where: { id: sectionId },
-    data: { status: "GENERATING" },
-  });
+  const taskSignal = registerTaskAbortController(task.id);
 
   try {
+    await options?.onTaskCreated?.(task.id);
+    await prisma.pageSection.update({
+      where: { id: sectionId },
+      data: { status: "GENERATING" },
+    });
+    await assertTaskNotCanceled(task.id);
+
+    const { provider, adapter } = await getProviderAdapter();
+    const generationSettings = getGenerationSettings(project);
+    const visualStyleGuide = getProjectVisualStyleGuide(project);
+    const generationRequirements = readGenerationRequirements(project.analysis?.normalizedResult);
+    const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
+    const outputSize = getOutputSize(sectionAspectRatio);
+    const modelCandidates = buildImageModelCandidates(provider, options);
+    const selectedModel = modelCandidates[0] ?? null;
+    const explicitReferenceAssets = await resolveReferenceAssets(options?.referenceAssetIds ?? []);
+    const effectiveReferenceAssets = mergeReferenceAssets(
+      project.assets as AssetRecord[],
+      explicitReferenceAssets as AssetRecord[],
+    );
+    const referenceImages = await Promise.all(effectiveReferenceAssets.map((asset) => assetToDataUrl(asset)));
+    await assertTaskNotCanceled(task.id);
+
     const basePrompt = options?.regenerate
       ? buildRegenerationPrompt(
           section,
           effectiveReferenceAssets as ProductAsset[],
           sectionAspectRatio,
           generationSettings.contentLanguage,
+          generationRequirements,
         )
       : buildSectionImagePrompt(
           section,
           effectiveReferenceAssets as ProductAsset[],
           sectionAspectRatio,
           generationSettings.contentLanguage,
+          generationRequirements,
         );
     const prompt = await buildVisualPromptWithAgent({
       provider,
@@ -705,7 +743,9 @@ async function generateSectionImageInternal(
       projectId,
       sectionId,
       operation: options?.regenerate ? "visual_prompt_agent_regenerate_section" : "visual_prompt_agent_generate_section",
+      signal: taskSignal,
     });
+    await assertTaskNotCanceled(task.id);
 
     let imageAsset;
     let version;
@@ -727,7 +767,9 @@ async function generateSectionImageInternal(
         projectId,
         sectionId,
         operation: options?.regenerate ? "regenerate_section_image" : "generate_section_image",
+        signal: taskSignal,
       });
+      await assertTaskNotCanceled(task.id);
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -741,10 +783,12 @@ async function generateSectionImageInternal(
           primaryReferenceAssetId: effectiveReferenceAssets[0]?.id ?? null,
         },
       });
+      await assertTaskNotCanceled(task.id);
 
       usedModel = generation.model;
       generationMode = "image_api";
     } catch (error) {
+      if (isTaskCanceledError(error)) throw error;
       if (!generationSettings.allowSvgFallback) {
         const detail = error instanceof Error ? error.message : "Unknown image generation error";
         if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
@@ -766,7 +810,9 @@ async function generateSectionImageInternal(
         referenceAssets: effectiveReferenceAssets,
         aspectRatio: sectionAspectRatio,
         contentLanguage: generationSettings.contentLanguage,
+        signal: taskSignal,
       });
+      await assertTaskNotCanceled(task.id);
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -785,6 +831,7 @@ async function generateSectionImageInternal(
           imageApiError: error instanceof Error ? error.message : "Unknown image api error",
         },
       });
+      await assertTaskNotCanceled(task.id);
 
       usedModel = fallback.model;
       generationMode = "svg_fallback";
@@ -825,12 +872,16 @@ async function generateSectionImageInternal(
     await prisma.pageSection.update({
       where: { id: sectionId },
       data: {
-        status: "FAILED",
+        status: isTaskCanceledError(error) ? (section.currentImageAssetId ? "SUCCESS" : "IDLE") : "FAILED",
       },
     });
 
-    await failTask(task.id, error instanceof Error ? error.message : "Image generation failed");
+    if (!isTaskCanceledError(error)) {
+      await failTask(task.id, error instanceof Error ? error.message : "Image generation failed");
+    }
     throw error;
+  } finally {
+    releaseTaskAbortController(task.id);
   }
 }
 
@@ -839,11 +890,13 @@ export async function generateSectionImage(
   sectionId: string,
   preferredModelId?: string | null,
   referenceAssetIds?: string[],
+  onTaskCreated?: (taskId: string) => void | Promise<void>,
 ) {
   return generateSectionImageInternal(projectId, sectionId, {
     preferredModelId,
     referenceAssetIds,
     regenerate: false,
+    onTaskCreated,
   });
 }
 
@@ -852,11 +905,13 @@ export async function regenerateSectionImage(
   sectionId: string,
   preferredModelId?: string | null,
   referenceAssetIds?: string[],
+  onTaskCreated?: (taskId: string) => void | Promise<void>,
 ) {
   return generateSectionImageInternal(projectId, sectionId, {
     preferredModelId,
     referenceAssetIds,
     regenerate: true,
+    onTaskCreated,
   });
 }
 
@@ -900,6 +955,7 @@ export async function editSectionImage(
   const { provider, adapter } = await getProviderAdapter();
   const generationSettings = getGenerationSettings(project);
   const visualStyleGuide = getProjectVisualStyleGuide(project);
+  const generationRequirements = readGenerationRequirements(project.analysis?.normalizedResult);
   const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
   const outputSize = getOutputSize(sectionAspectRatio);
   const modelCandidates = buildImageModelCandidates(provider, {
@@ -957,6 +1013,7 @@ export async function editSectionImage(
       editMode,
       sectionAspectRatio,
       effectiveContentLanguage,
+      generationRequirements,
     );
     const prompt = await buildVisualPromptWithAgent({
       provider,

@@ -38,6 +38,7 @@ export function buildSectionPlanningPrompt(
     userConcerns: analysis.userConcerns.slice(0, 6),
     recommendedFocusPoints: analysis.recommendedFocusPoints.slice(0, 8),
     additionalInformation: analysis.additionalInformation,
+    generationRequirements: analysis.generationRequirements,
     suggestedSectionPlan: analysis.suggestedSectionPlan.slice(0, 8),
   };
   const productRealityChecklist = [
@@ -68,6 +69,8 @@ export function buildSectionPlanningPrompt(
     "The hero sections should cover different roles such as primary visual, core selling point, scenario mood, trust, and differentiation without repeating the same purpose.",
     "For each hero section, describe a different concrete picture: camera angle, crop, product placement, scene/background, props, lighting, in-image title position, selling-point callouts, CTA placement, and what exact product feature is visible.",
     "Hero section visualPrompts must not reuse the same generic sentence. Each one needs at least 3 concrete visual details unique to that image.",
+    "If generationRequirements is provided, treat it as a hard creative brief. Convert requirements such as multi-angle, multi-scene, and different usage methods into distinct hero/detail sections and concrete visualPrompt instructions.",
+    "Do not merely repeat generationRequirements as generic text; operationalize it through camera angles, scenes, props, product interaction modes, section goals, and in-image copy.",
     "All non-hero sections must come after the hero sections.",
     "Each section item must include: id, type, title, goal, copy, visualPrompt, editableFields.",
     "Each section.visualPrompt must explicitly cite how it follows the shared visualStyleGuide: same palette, background system, lighting, typography, CTA style, safe margins, product rendering rules, and negative constraints.",
@@ -156,6 +159,7 @@ export function buildVisualStyleGuidePrompt(
         differentiationPoints: analysis.differentiationPoints,
         usageScenarios: analysis.usageScenarios,
         additionalInformation: analysis.additionalInformation,
+        generationRequirements: analysis.generationRequirements,
       },
       null,
       2,

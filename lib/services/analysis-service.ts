@@ -4,9 +4,12 @@ import { ZodError } from "zod";
 import { buildProductAnalysisPrompt, buildProductAnalysisRepairPrompt } from "@/lib/ai/prompts";
 import { productAnalysisOutputSchema } from "@/lib/ai/schemas/product-analysis";
 import { prisma } from "@/lib/db/prisma";
+import { patchProjectModelSnapshot } from "@/lib/services/project-model-snapshot-service";
 import { getProviderAdapter } from "@/lib/services/provider-service";
 import { completeTask, createTask, failTask, findRecentRunningTask } from "@/lib/services/task-service";
 import { readStorageFile } from "@/lib/storage/asset-manager";
+
+const MAX_ANALYSIS_IMAGES = 10;
 
 function normalizeModelId(value: string) {
   return value.toLowerCase();
@@ -185,7 +188,9 @@ export async function analyzeProject(projectId: string, preferredModelId?: strin
   });
 
   try {
-    const imageUrls = await Promise.all(project.assets.slice(0, 6).map((asset) => assetToDataUrl(asset)));
+    const imageUrls = await Promise.all(
+      project.assets.slice(0, MAX_ANALYSIS_IMAGES).map((asset) => assetToDataUrl(asset)),
+    );
     const prompt = buildProductAnalysisPrompt(project.assets);
 
     let parsedResult: Prisma.JsonObject;
@@ -282,11 +287,11 @@ export async function analyzeProject(projectId: string, preferredModelId?: strin
       where: { id: projectId },
       data: {
         status: "ANALYZED",
-        modelSnapshot: {
-          analysisModelId: model,
-          providerConfigId: provider.id,
-        },
       },
+    });
+    await patchProjectModelSnapshot(projectId, {
+      analysisModelId: model,
+      providerConfigId: provider.id,
     });
 
     await completeTask(task.id, saved.normalizedResult);

@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 import {
   activateProviderConfig,
+  deleteProviderConfig,
   getAllProviderConfigs,
   resolveProviderConnectionInput,
   saveProviderConfig,
@@ -17,6 +18,10 @@ import { handleRouteError, ok } from "@/lib/utils/route";
 
 const providerActivateSchema = z.object({
   providerId: z.string().min(1, "请选择要切换的历史服务"),
+});
+
+const providerDeleteSchema = z.object({
+  providerId: z.string().min(1, "请选择要删除的历史服务"),
 });
 
 function providerRuntimeConfig() {
@@ -61,6 +66,18 @@ export async function PATCH(request: NextRequest) {
   try {
     const parsed = providerActivateSchema.parse(await request.json());
     const providers = await activateProviderConfig(parsed.providerId);
+    return ok({ providers, runtime: providerRuntimeConfig() });
+  } catch (error) {
+    return handleRouteError(error);
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const parsed = providerDeleteSchema.parse({
+      providerId: request.nextUrl.searchParams.get("id") ?? "",
+    });
+    const providers = await deleteProviderConfig(parsed.providerId);
     return ok({ providers, runtime: providerRuntimeConfig() });
   } catch (error) {
     return handleRouteError(error);
